@@ -36,7 +36,7 @@ analytics_engine_datasets = [
 
 [env.production]
 name = "playerdb"
-workers_dev = true
+workers_dev = false
 logpush = false
 routes = [
 	{ pattern = "playerdb.co/*", zone_id = "ec0eb965a33b926fd8c8a69bfd6a9c39" }
