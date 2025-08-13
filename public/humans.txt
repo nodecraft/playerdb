@@ -1,0 +1,15 @@
+/* TEAM */
+CEO: Jonathan Yarbor
+Site: jon@nodecraft.com
+Twitter: @captainyarb
+Github: captainyarb
+Location: Oklahoma City, United States
+
+CTO: James Ross
+Site: james@nodecraft.com
+Twitter: @cherryjimbo
+Github: cherry
+Location: London, United Kingdom
+
+/* See more at https://nodecraft.com/about/staff */
+/* Join our team at https://nodecraft.com/about/jobs */

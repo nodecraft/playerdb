@@ -1,0 +1,12 @@
+{
+	"root": true,
+	"extends": ["@nodecraft/eslint-config/typescript"],
+	"plugins": ["json"],
+	"rules": {
+		"n/no-unsupported-features/node-builtins": "off"
+	},
+	"parserOptions": {
+		"ecmaVersion": 2024,
+		"sourceType": "module"
+	}
+}

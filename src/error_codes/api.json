@@ -1,0 +1,7 @@
+{
+	"api_invalid": "Invalid or missing API credentials.",
+	"api_exceeded": "Rate limit exceeded",
+	"api.unknown_error": "Unknown error occurred",
+	"api.internal_error": "Internal error occurred",
+	"api.404": "No route found for given URL"
+}

@@ -1,0 +1,55 @@
+name = "playerdb-dev"
+account_id = "59a6a7816e5ccdd2ef4dc158bcd8b014"
+workers_dev = true
+compatibility_date = "2025-08-13"
+compatibility_flags = [
+	"nodejs_compat",
+	"no_nodejs_compat_v2"
+]
+main = "./src/worker.ts"
+kv_namespaces = [
+	{ binding = "PLAYERDB_CACHE", id = "86165579ba4a4a5c84902993f5701704", preview_id = "ddf48955dc694c62836cb66d848e3cd6" },
+]
+analytics_engine_datasets = [
+	{ binding = "PLAYERDB_ANALYTICS" }
+]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+html_handling = "drop-trailing-slash"
+not_found_handling = "404-page"
+run_worker_first = true
+
+[define]
+"process.env.NODE_ENV"="'development'"
+
+[env.staging]
+name = "playerdb-staging"
+workers_dev = true
+kv_namespaces = [
+	{ binding = "PLAYERDB_CACHE", id = "86165579ba4a4a5c84902993f5701704", preview_id = "ddf48955dc694c62836cb66d848e3cd6" },
+]
+analytics_engine_datasets = [
+	{ binding = "PLAYERDB_ANALYTICS" }
+]
+
+[env.production]
+name = "playerdb"
+workers_dev = true
+logpush = false
+routes = [
+	{ pattern = "playerdb.co/*", zone_id = "ec0eb965a33b926fd8c8a69bfd6a9c39" }
+]
+kv_namespaces = [
+	{ binding = "PLAYERDB_CACHE", id = "86165579ba4a4a5c84902993f5701704", preview_id = "ddf48955dc694c62836cb66d848e3cd6" },
+]
+
+analytics_engine_datasets = [
+	{ binding = "PLAYERDB_ANALYTICS" }
+]
+
+minify = true
+
+[env.production.define]
+"process.env.NODE_ENV"="'production'"

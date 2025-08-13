@@ -1,0 +1,7 @@
+{
+	"steam.invalid_id": "Invalid Steam ID supplied.",
+	"steam.found": "Steam ID looked successfully found the requested user.",
+	"steam.api_failure": "Steam ID lookup failed.",
+	"steam.non_json": "Valve API returned an invalid, non JSON response.",
+	"steam.rate_limited": "This request has been rate limited upstream. Please try again later."
+}

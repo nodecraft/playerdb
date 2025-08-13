@@ -1,0 +1,17 @@
+{
+	"compilerOptions": {
+		"target": "esnext",
+		"module": "esnext",
+		"lib": ["ESNext"],
+		"types": ["@cloudflare/workers-types/experimental", "@types/node"],
+		"moduleResolution": "bundler",
+		"strict": true,
+		"noImplicitAny": true,
+		"strictNullChecks": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"skipLibCheck": true,
+		"verbatimModuleSyntax": true
+	},
+	"include": ["src/**/*.ts"]
+}
