@@ -1,0 +1,41 @@
+name: Deploy
+on:
+  push:
+    branches:
+      - main
+  repository_dispatch:
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: 22.x
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Publish
+        uses: cloudflare/wrangler-action@v3.14.1
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          environment: 'production'
+          command: deploy --env production
+          secrets: |
+            XBOX_APIKEY
+            STEAM_APIKEY
+            STEAM_APIKEY2
+            STEAM_APIKEY3
+            STEAM_APIKEY4
+        env:
+          XBOX_APIKEY: ${{ secrets.XBOX_APIKEY }}
+          STEAM_APIKEY: ${{ secrets.STEAM_APIKEY }}
+          STEAM_APIKEY2: ${{ secrets.STEAM_APIKEY2 }}
+          STEAM_APIKEY3: ${{ secrets.STEAM_APIKEY3 }}
+          STEAM_APIKEY4: ${{ secrets.STEAM_APIKEY4 }}

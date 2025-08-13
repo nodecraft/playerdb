@@ -1,0 +1,21 @@
+name: Test
+on:
+  pull_request:
+
+env:
+  NODE_VERSION: 22.x
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check-types
+      - run: npm run test

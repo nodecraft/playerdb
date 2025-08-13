@@ -1,0 +1,7 @@
+{
+	"minecraft.invalid_username": "No Minecraft user could be found.",
+	"minecraft.non_json": "Mojang API returned an invalid, non JSON response.",
+	"minecraft.api_failure": "Mojang API lookup failed.",
+	"minecraft.rate_limited": "Mojang has rate limited this request. Please try again later.",
+	"minecraft.rate_blocked": "Mojang has rate limited all requests from PlayerDB. Please wait a few more minutes before trying the request again."
+}

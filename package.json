@@ -1,0 +1,55 @@
+{
+	"name": "playerdb",
+	"version": "1.0.0",
+	"private": true,
+	"description": "Super scalable Minecraft and Steam player information, powered by Cloudflare Workers",
+	"homepage": "https://github.com/nodecraft/playerdb#readme",
+	"bugs": {
+		"url": "https://github.com/nodecraft/playerdb/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/nodecraft/playerdb.git"
+	},
+	"license": "UNLICENSED",
+	"author": "Nodecraft Inc.",
+	"type": "module",
+	"scripts": {
+		"check-types": "tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
+		"deploy": "wrangler deploy",
+		"deploy:prod": "wrangler deploy --env production",
+		"deploy:staging": "wrangler deploy --env staging",
+		"dev": "wrangler dev",
+		"lint": "npm run lint:js && npm run lint:json",
+		"lint:js": "eslint \"**/*.{js,ts}\"",
+		"lint:js:fix": "eslint \"**/*.{js,ts}\" --fix",
+		"lint:json": "eslint \"**/*.json\"",
+		"test": "npm run test:unit",
+		"test:unit": "vitest run",
+		"test:unit:dev": "vitest watch"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "0.8.63",
+		"@cloudflare/workers-types": "4.20250813.0",
+		"@nodecraft/eslint-config": "46.0.0",
+		"@types/lodash": "4.17.20",
+		"@types/node": "22.17.1",
+		"@typescript-eslint/eslint-plugin": "8.39.1",
+		"cross-env": "10.0.0",
+		"dotenv": "17.2.1",
+		"eslint": "8.57.1",
+		"eslint-plugin-import": "2.32.0",
+		"eslint-plugin-json": "4.0.1",
+		"eslint-plugin-unicorn": "56.0.1",
+		"lodash": "4.17.21",
+		"steamid": "2.1.0",
+		"typescript": "5.9.2",
+		"vitest": "3.2.4",
+		"webpack-cli": "6.0.1",
+		"wrangler": "4.29.1"
+	},
+	"engines": {
+		"node": ">=20",
+		"npm": ">=10"
+	}
+}
