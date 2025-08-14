@@ -33,9 +33,11 @@ jobs:
             STEAM_APIKEY2
             STEAM_APIKEY3
             STEAM_APIKEY4
+            NODECRAFT_API_KEY
         env:
           XBOX_APIKEY: ${{ secrets.XBOX_APIKEY }}
           STEAM_APIKEY: ${{ secrets.STEAM_APIKEY }}
           STEAM_APIKEY2: ${{ secrets.STEAM_APIKEY2 }}
           STEAM_APIKEY3: ${{ secrets.STEAM_APIKEY3 }}
           STEAM_APIKEY4: ${{ secrets.STEAM_APIKEY4 }}
+          NODECRAFT_API_KEY: ${{ secrets.NODECRAFT_API_KEY }}

@@ -26,7 +26,7 @@ export function writeDataPoint(
 		blobs: [
 			data.type || 'unknown',
 			data.error || '',
-			data.request_type || 'unknown', // http | tcp
+			data.request_type || 'unknown', // http | tcp | nodecraft_api
 			request.url,
 			userAgent,
 			request.headers.get('referer'),
