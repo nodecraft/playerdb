@@ -1,5 +1,6 @@
 // eslint-disable-next-line n/no-missing-import
 import { connect } from 'cloudflare:sockets';
+import { env } from 'cloudflare:workers';
 
 import { writeDataPoint } from './analytics';
 import { errorCode, failCode } from './helpers';
@@ -12,7 +13,6 @@ const apiPrimary = 'https://api.mojang.com/';
 const apiSessions = 'https://sessionserver.mojang.com/';
 const apiServices = 'https://api.minecraftservices.com/';
 
-// temporary proxy used to avoid rate-limiting
 const flyProxy = 'https://playerdb.fly.dev/';
 const oneDay = 60 * 60 * 24;
 const cacheTtl = oneDay * 7; // 7 days
@@ -29,6 +29,62 @@ type RequestData = {
 	qs?: Record<string, string>;
 };
 const helpers = {
+	async nodecraftAPIRequest(payload: Payload) {
+		const url = new URL('/v2/playerdb', 'https://api.nodecraft.com');
+		url.searchParams.set('type', 'minecraft');
+		// TODO: type this better using Cloudflare.env
+		url.searchParams.set('api_key', (env as Environment).NODECRAFT_API_KEY ?? '');
+		if (payload.username) {
+			url.searchParams.set('username', payload.username);
+		}
+		if (payload.id) {
+			url.searchParams.set('id', payload.id);
+		}
+
+		const response = await fetch(url.href, {
+			headers: {
+				'content-type': 'application/json',
+				'accept': 'application/json',
+			},
+			method: 'GET',
+			cf: {
+				cacheEverything: true,
+				cacheTtl,
+			},
+		});
+		if (response.status === 429) {
+			// rate limited, we're done
+			throw new errorCode('minecraft.rate_limited', { statusCode: 429 });
+		}
+		let body = null;
+		try {
+			body = await response.json<any>();
+		} catch {
+			// we tried
+		}
+		if (response.status === 404 && body?.errorMessage?.includes?.('Couldn\'t find any profile with name')) {
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
+
+		if (response.status === 204 && !body) {
+			// bad username
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
+
+		if (response.status !== 200) {
+			// other API failure
+			console.log('got non-200 response from nodecraft api', response.status, body);
+			throw new errorCode('minecraft.api_failure');
+		}
+
+		const contentType = response.headers.get('content-type');
+		if (!contentType || !contentType.includes('json')) {
+			throw new errorCode('minecraft.non_json', { contentType: contentType || null });
+		}
+
+		body.request_type = 'nodecraft_api';
+		return body;
+	},
 	async tcpRequest(data: RequestData) {
 		const url = new URL((data.host ?? apiPrimary) + data.path);
 		if (data.qs) {
@@ -135,6 +191,9 @@ const helpers = {
 		if (data.qs) {
 			url.search = new URLSearchParams(data.qs).toString();
 		}
+		if (data.host?.includes(flyProxy)) {
+			url.searchParams.set('api_key', (env as Environment).NODECRAFT_API_KEY || '');
+		}
 		const response = await fetch(url.href, {
 			method: 'GET',
 			cf: {
@@ -142,6 +201,19 @@ const helpers = {
 				cacheTtl,
 			},
 		});
+
+		if (response.status === 429 || response.status === 403) {
+			if (data.host && data.host.includes(flyProxy)) {
+				// rate limited, one final try on nodecraft api
+				return helpers.nodecraftAPIRequest(payload);
+			}
+
+			// rate-limited, try fly proxy
+			return helpers.request({
+				...data,
+				host: flyProxy,
+			}, payload);
+		}
 
 		let body = null;
 		try {
@@ -204,10 +276,12 @@ const mojangLib = {
 		const kvKey = 'minecraft-username-' + username;
 		let results = null;
 		try {
-			results = await env.PLAYERDB_CACHE.get(kvKey, {
-				type: 'json',
-				cacheTtl: oneDay,
-			});
+			if (env.BYPASS_CACHE !== 'true') {
+				results = await env.PLAYERDB_CACHE.get(kvKey, {
+					type: 'json',
+					cacheTtl: oneDay,
+				});
+			}
 		} catch {
 			// nothing in KV
 		}
@@ -263,10 +337,12 @@ const mojangLib = {
 		const kvKey = 'minecraft-profile-' + uuid;
 		let results = null;
 		try {
-			results = await env.PLAYERDB_CACHE.get(kvKey, {
-				type: 'json',
-				cacheTtl: oneDay,
-			});
+			if (env.BYPASS_CACHE !== 'true') {
+				results = await env.PLAYERDB_CACHE.get(kvKey, {
+					type: 'json',
+					cacheTtl: oneDay,
+				});
+			}
 		} catch {
 			// nothing in KV
 		}
