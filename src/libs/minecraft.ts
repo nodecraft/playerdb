@@ -1,6 +1,5 @@
 // eslint-disable-next-line n/no-missing-import
 import { connect } from 'cloudflare:sockets';
-import { env } from 'cloudflare:workers';
 
 import { writeDataPoint } from './analytics';
 import { errorCode, failCode } from './helpers';
@@ -29,11 +28,10 @@ type RequestData = {
 	qs?: Record<string, string>;
 };
 const helpers = {
-	async nodecraftAPIRequest(payload: Payload) {
+	async nodecraftAPIRequest(payload: Payload, env: Environment) {
 		const url = new URL('/v2/playerdb', 'https://api.nodecraft.com');
 		url.searchParams.set('type', 'minecraft');
-		// TODO: type this better using Cloudflare.env
-		url.searchParams.set('api_key', (env as Environment).NODECRAFT_API_KEY ?? '');
+		url.searchParams.set('api_key', env.NODECRAFT_API_KEY ?? '');
 		if (payload.username) {
 			url.searchParams.set('username', payload.username);
 		}
@@ -186,6 +184,7 @@ const helpers = {
 	async request(
 		data: RequestData,
 		payload: Payload = {},
+		env: Environment,
 	): Promise<Record<string, unknown>> {
 		const url = new URL((data.host ?? apiPrimary) + data.path);
 		if (data.qs) {
@@ -205,14 +204,14 @@ const helpers = {
 		if (response.status === 429 || response.status === 403) {
 			if (data.host && data.host.includes(flyProxy)) {
 				// rate limited, one final try on nodecraft api
-				return helpers.nodecraftAPIRequest(payload);
+				return helpers.nodecraftAPIRequest(payload, env);
 			}
 
 			// rate-limited, try fly proxy
 			return helpers.request({
 				...data,
 				host: flyProxy,
-			}, payload);
+			}, payload, env);
 		}
 
 		let body = null;
@@ -236,7 +235,7 @@ const helpers = {
 
 		if (response.status !== 200) {
 			// other API failure
-			console.log('got non-200 response from mojang', response.status, body);
+			console.warn('got non-200 response', response.status, body);
 			throw new errorCode('minecraft.api_failure');
 		}
 
@@ -319,6 +318,7 @@ const mojangLib = {
 					username: username,
 					date: date,
 				},
+				env,
 			);
 		}
 
@@ -371,6 +371,7 @@ const mojangLib = {
 				{
 					id: lookup,
 				},
+				env,
 			);
 		}
 		results.formatted_id = helpers.formatId(results.id);
@@ -382,13 +383,6 @@ const mojangLib = {
 		);
 		return results;
 	},
-	async history(uuid: string) {
-		const lookup = String(uuid).replace(/-/, '');
-		const results = await helpers.request({
-			path: 'user/profiles/' + lookup + '/names',
-		});
-		return results;
-	},
 };
 
 const lookup = async function lookup(
@@ -398,6 +392,10 @@ const lookup = async function lookup(
 ) {
 	const url = new URL(request.url);
 	const username = url.pathname.split('/').pop() || ''; // get last segment of URL pathname
+
+	if (username === '') {
+		throw new failCode('api.404');
+	}
 
 	const returnData: Record<string, any> = { meta: {} };
 	let profile = null;
@@ -435,6 +433,7 @@ const lookup = async function lookup(
 	writeDataPoint(env, request, {
 		type: 'minecraft',
 		request_type: profile.request_type,
+		status: 200,
 	});
 	return { player: returnData };
 };

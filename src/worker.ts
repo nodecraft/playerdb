@@ -159,6 +159,7 @@ async function handleRequest(
 		writeDataPoint(env, request, {
 			cached: true,
 			type,
+			status: response.status,
 		});
 		return new Response(response.body, {
 			status: response.status,
@@ -205,6 +206,7 @@ async function handleRequest(
 			type,
 			// @ts-expect-error errors aren't properly typed
 			error: err.code || 'unknown',
+			status,
 		});
 	}
 

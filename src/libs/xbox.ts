@@ -111,6 +111,10 @@ const helpers = {
 const lookup = async function lookup(request: Request, env: Environment) {
 	const url = new URL(request.url);
 	const xuid = url.pathname.split('/').pop(); // get last segment of URL pathname
+
+	if (!xuid) {
+		throw new failCode('api.404');
+	}
 	const isNumber = xuid !== undefined && !Number.isNaN(Number.parseInt(xuid));
 	let returnData: Record<string, unknown> = {};
 	let data;
@@ -137,7 +141,10 @@ const lookup = async function lookup(request: Request, env: Environment) {
 	}
 	// parse the response data, and merge it with the existing returnData
 	returnData = { ...helpers.parse(data), ...returnData };
-	writeDataPoint(env, request, { type: 'xbox' });
+	writeDataPoint(env, request, {
+		type: 'xbox',
+		status: 200,
+	});
 	return { player: returnData };
 };
 

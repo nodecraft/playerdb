@@ -1,7 +1,7 @@
 name = "playerdb-dev"
 account_id = "59a6a7816e5ccdd2ef4dc158bcd8b014"
 workers_dev = true
-compatibility_date = "2025-08-13"
+compatibility_date = "2025-01-19"
 compatibility_flags = [
 	"nodejs_compat",
 	"no_nodejs_compat_v2"
@@ -38,6 +38,7 @@ analytics_engine_datasets = [
 name = "playerdb"
 workers_dev = false
 logpush = false
+
 routes = [
 	{ pattern = "playerdb.co/*", zone_id = "ec0eb965a33b926fd8c8a69bfd6a9c39" }
 ]
@@ -53,3 +54,7 @@ minify = true
 
 [env.production.define]
 "process.env.NODE_ENV"="'production'"
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1
