@@ -5,6 +5,7 @@ type AnalyticsData = {
 	error?: string;
 	request_type?: string;
 	cached?: boolean;
+	status?: number;
 };
 export function writeDataPoint(
 	env: Environment,
@@ -40,6 +41,7 @@ export function writeDataPoint(
 			(request.cf?.asn || 0) as number,
 			data.cached ? 1 : 0,
 			responseTime,
+			data.status || 0,
 		],
 	};
 	if (!env.PLAYERDB_ANALYTICS) {

@@ -67,6 +67,10 @@ const lookup = async function lookup(request: Request, env: Environment) {
 	const url = new URL(request.url);
 	let steamID = url.pathname.split('/').pop() || ''; // get last segment of URL pathname
 
+	if (steamID === '') {
+		throw new failCode('api.404');
+	}
+
 	let id = null;
 	const returnData: Record<string, any> = { meta: {} };
 
@@ -145,6 +149,7 @@ const lookup = async function lookup(request: Request, env: Environment) {
 	writeDataPoint(env, request, {
 		type: 'steam',
 		request_type: playerSummary.request_type,
+		status: 200,
 	});
 	return { player: returnData };
 };
