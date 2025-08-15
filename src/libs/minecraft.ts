@@ -393,8 +393,14 @@ const lookup = async function lookup(
 	const url = new URL(request.url);
 	const username = url.pathname.split('/').pop() || ''; // get last segment of URL pathname
 
+	// no username, return 404
 	if (username === '') {
 		throw new failCode('api.404');
+	}
+
+	// if username contains any non-alphanumeric characters plus - and _, return 400
+	if (!/^[\w-]+$/.test(username)) {
+		throw new failCode('minecraft.invalid_username', { statusCode: 400 });
 	}
 
 	const returnData: Record<string, any> = { meta: {} };

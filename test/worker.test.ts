@@ -144,22 +144,22 @@ describe('minecraft api', () => {
 		expect(json.data.player.name_history).toEqual(expect.any(Array));
 	});
 
-	it('responds for invalid username', async () => {
+	it('responds for unknown player', async () => {
 		const request = new IncomingRequest(
-			'http://localhost/api/player/minecraft/cherryjimbo.this-is-not-real',
+			'http://localhost/api/player/minecraft/cherryjimbo-nope',
 		);
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(request, env, ctx);
 		await waitOnExecutionContext(ctx);
 		const json = await response.json<any>();
-		expect(response.status).toBe(500);
+		expect(response.status).toBe(400);
 		expect(json.success).toBe(false);
-		expect(json.code).toEqual('minecraft.api_failure');
+		expect(json.code).toEqual('minecraft.invalid_username');
 	});
 
-	it('responds for unknown player', async () => {
+	it('responds with 400 for invalid username', async () => {
 		const request = new IncomingRequest(
-			'http://localhost/api/player/minecraft/cherryjimbo-nope',
+			'http://localhost/api/player/minecraft/cherryjimbo@example.com',
 		);
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(request, env, ctx);
