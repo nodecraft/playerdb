@@ -29,7 +29,7 @@
 		"test:unit:dev": "vitest watch"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "0.8.63",
+		"@cloudflare/vitest-pool-workers": "0.8.71",
 		"@cloudflare/workers-types": "4.20250813.0",
 		"@nodecraft/eslint-config": "46.0.0",
 		"@types/lodash": "4.17.20",
