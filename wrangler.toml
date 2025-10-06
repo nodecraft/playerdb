@@ -1,7 +1,7 @@
 name = "playerdb-dev"
 account_id = "59a6a7816e5ccdd2ef4dc158bcd8b014"
 workers_dev = true
-compatibility_date = "2025-01-19"
+compatibility_date = "2025-08-16"
 compatibility_flags = [
 	"nodejs_compat",
 	"no_nodejs_compat_v2"
@@ -58,3 +58,4 @@ minify = true
 [env.production.observability]
 enabled = true
 head_sampling_rate = 1
+traces = {enabled = true}
