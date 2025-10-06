@@ -127,6 +127,7 @@ const helpers = {
 				}
 				result += decoder.decode(value);
 			}
+			socket.close();
 			const parsed = parseResponse(result);
 
 			if (parsed.statusCode === 429) {
