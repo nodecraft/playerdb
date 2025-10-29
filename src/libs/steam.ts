@@ -26,6 +26,7 @@ const helpers = {
 				cacheEverything: true,
 				cacheTtl,
 			},
+			signal: AbortSignal.timeout(5000),
 		});
 
 		if (response.status === 429) {

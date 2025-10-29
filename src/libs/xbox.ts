@@ -24,6 +24,7 @@ const helpers = {
 				cacheTtl,
 			},
 			...data,
+			signal: AbortSignal.timeout(5000),
 		};
 		const url = new URL(apiUrl);
 		url.pathname = apiVersion;
