@@ -29,24 +29,24 @@
 		"test:unit:dev": "vitest watch"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "0.8.63",
-		"@cloudflare/workers-types": "4.20250813.0",
+		"@cloudflare/vitest-pool-workers": "0.10.2",
+		"@cloudflare/workers-types": "4.20251014.0",
 		"@nodecraft/eslint-config": "46.0.0",
 		"@types/lodash": "4.17.20",
-		"@types/node": "22.17.1",
-		"@typescript-eslint/eslint-plugin": "8.39.1",
-		"cross-env": "10.0.0",
-		"dotenv": "17.2.1",
+		"@types/node": "22.18.13",
+		"@typescript-eslint/eslint-plugin": "8.46.2",
+		"cross-env": "10.1.0",
+		"dotenv": "17.2.3",
 		"eslint": "8.57.1",
 		"eslint-plugin-import": "2.32.0",
 		"eslint-plugin-json": "4.0.1",
 		"eslint-plugin-unicorn": "56.0.1",
 		"lodash": "4.17.21",
 		"steamid": "2.1.0",
-		"typescript": "5.9.2",
+		"typescript": "5.9.3",
 		"vitest": "3.2.4",
 		"webpack-cli": "6.0.1",
-		"wrangler": "4.29.1"
+		"wrangler": "4.45.2"
 	},
 	"engines": {
 		"node": ">=20",

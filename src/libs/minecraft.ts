@@ -27,6 +27,7 @@ type RequestData = {
 	path: string;
 	qs?: Record<string, string>;
 };
+
 const helpers = {
 	async nodecraftAPIRequest(payload: Payload, env: Environment) {
 		const url = new URL('/v2/playerdb', 'https://api.nodecraft.com');
@@ -49,6 +50,7 @@ const helpers = {
 				cacheEverything: true,
 				cacheTtl,
 			},
+			signal: AbortSignal.timeout(5000),
 		});
 		if (response.status === 429) {
 			// rate limited, we're done
@@ -88,6 +90,11 @@ const helpers = {
 		if (data.qs) {
 			url.search = new URLSearchParams(data.qs).toString();
 		}
+
+		const timeout = setTimeout(() => {
+			console.warn('TCP request timed out');
+			throw new errorCode('minecraft.api_failure');
+		}, 5000);
 
 		try {
 			const socket = await connect(
@@ -129,6 +136,7 @@ const helpers = {
 			}
 			socket.close();
 			const parsed = parseResponse(result);
+			clearTimeout(timeout);
 
 			if (parsed.statusCode === 429) {
 				// rate limited, we're done
@@ -200,6 +208,7 @@ const helpers = {
 				cacheEverything: true,
 				cacheTtl,
 			},
+			signal: AbortSignal.timeout(5000),
 		});
 
 		if (response.status === 429 || response.status === 403) {
