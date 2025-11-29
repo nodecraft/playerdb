@@ -21,7 +21,8 @@ export function parseResponse(data: string) {
 
 	// Headers
 	const headers: Record<string, string> = {};
-	for (const line of headLines.slice(1)) {
+	for (let idx = 1; idx < headLines.length; idx++) {
+		const line = headLines[idx];
 		// TODO: support alternate whitespace after first ":"?
 		const i = line.indexOf(': ');
 		if (i === -1) {

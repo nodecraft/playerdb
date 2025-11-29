@@ -1,12 +1,21 @@
 import steamid from 'steamid';
 
 import { writeDataPoint } from './analytics';
+import * as helperCodes from './helpers';
 import { errorCode, failCode } from './helpers';
 
-import type { Environment } from '../types';
+import type { HonoEnv } from '../types';
+import type { Context } from 'hono';
 
 const apiUrl = 'https://api.steampowered.com/';
 const cacheTtl = 60 * 60 * 24 * 5; // 5 days
+
+const responseHeaders = {
+	'content-type': 'application/json; charset=utf-8',
+	'access-control-allow-origin': '*',
+	'access-control-allow-methods': 'GET, OPTIONS',
+	'Cache-Control': `public, max-age=${cacheTtl}`,
+} as const;
 
 type RequestData = {
 	path: string;
@@ -64,9 +73,10 @@ const helpers = {
 	},
 };
 
-const lookup = async function lookup(request: Request, env: Environment) {
-	const url = new URL(request.url);
-	let steamID = url.pathname.split('/').pop() || ''; // get last segment of URL pathname
+const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
+	const env = honoCtx.env;
+
+	let steamID = honoCtx.get('lookupQuery') || '';
 
 	if (steamID === '') {
 		throw new failCode('api.404');
@@ -147,12 +157,20 @@ const lookup = async function lookup(request: Request, env: Environment) {
 		...playerSummaries.response.players[0],
 	};
 
-	writeDataPoint(env, request, {
+	writeDataPoint(honoCtx, {
 		type: 'steam',
 		request_type: playerSummary.request_type,
 		status: 200,
 	});
-	return { player: returnData };
+
+	// Construct response with success wrapper
+	const responseFull = helperCodes.code('player.found', { player: returnData }) as Record<
+		string,
+		unknown
+	>;
+	responseFull.success = true;
+
+	return honoCtx.json(responseFull, 200, responseHeaders);
 };
 
 export default lookup;

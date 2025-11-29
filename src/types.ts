@@ -10,6 +10,14 @@ export interface Environment {
 	STEAM_APIKEY4?: string;
 	NODECRAFT_API_KEY?: string;
 	BYPASS_CACHE?: string;
-
-	startTime?: Date;
 }
+
+export type HonoEnv = {
+	Bindings: Environment;
+	Variables: {
+		startTime: Date;
+		type: string;
+		lookupQuery: string;
+		url: URL;
+	};
+};

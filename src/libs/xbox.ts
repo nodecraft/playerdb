@@ -1,13 +1,25 @@
-import camelCase from 'lodash/camelCase';
-
 import { writeDataPoint } from './analytics';
-import { errorCode, failCode } from './helpers';
+import * as helperCodes from './helpers';
+import {
+	camelCase,
+	camelCaseCache,
+	errorCode,
+	failCode,
+} from './helpers';
 
-import type { Environment } from '../types';
+import type { HonoEnv } from '../types';
+import type { Context } from 'hono';
 
 const apiUrl = 'https://xbl.io/';
 const apiVersion = '/api/v2/';
 const cacheTtl = 60 * 60 * 24 * 5; // 5 days
+
+const responseHeaders = {
+	'content-type': 'application/json; charset=utf-8',
+	'access-control-allow-origin': '*',
+	'access-control-allow-methods': 'GET, OPTIONS',
+	'Cache-Control': `public, max-age=${cacheTtl}`,
+} as const;
 
 type RequestData = {
 	path: string;
@@ -83,16 +95,17 @@ const helpers = {
 			player = { id: raw.id, meta: {} };
 		}
 
+		// Process settings efficiently
 		for (const setting of raw.settings) {
+			// Check if it's a mapped field
 			if (helpers.map[setting.id as keyof typeof helpers.map]) {
-				player[helpers.map[setting.id as keyof typeof helpers.map]] =
-					setting.value;
-			} else {
-				player.meta[camelCase(setting.id)] = setting.value;
+				player[helpers.map[setting.id as keyof typeof helpers.map]] = setting.value;
+			} else if (!helpers.skipFields.has(setting.id)) {
+				// Skip known unnecessary fields, cache camelCase conversion
+				const camelKey = camelCaseCache[setting.id] || (camelCaseCache[setting.id] = camelCase(setting.id));
+				player.meta[camelKey] = setting.value;
 			}
 		}
-
-		delete player.meta.gameDisplayPicRaw; // unneeded
 
 		// ensure a username is defined
 		if (!player.username && player.meta.realName) {
@@ -107,11 +120,14 @@ const helpers = {
 	map: {
 		Gamertag: 'username',
 	},
+	// Skip fields we don't need to process
+	skipFields: new Set(['GameDisplayPicRaw']),
 };
 
-const lookup = async function lookup(request: Request, env: Environment) {
-	const url = new URL(request.url);
-	const xuid = url.pathname.split('/').pop(); // get last segment of URL pathname
+const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
+	const env = honoCtx.env;
+
+	const xuid = honoCtx.get('lookupQuery');
 
 	if (!xuid) {
 		throw new failCode('api.404');
@@ -142,11 +158,19 @@ const lookup = async function lookup(request: Request, env: Environment) {
 	}
 	// parse the response data, and merge it with the existing returnData
 	returnData = { ...helpers.parse(data), ...returnData };
-	writeDataPoint(env, request, {
+	writeDataPoint(honoCtx, {
 		type: 'xbox',
 		status: 200,
 	});
-	return { player: returnData };
+
+	// Construct response with success wrapper
+	const responseFull = helperCodes.code('player.found', { player: returnData }) as Record<
+		string,
+		unknown
+	>;
+	responseFull.success = true;
+
+	return honoCtx.json(responseFull, 200, responseHeaders);
 };
 
 export default lookup;

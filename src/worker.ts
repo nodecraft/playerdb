@@ -1,11 +1,13 @@
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+
 import { writeDataPoint } from './libs/analytics';
 import * as helpers from './libs/helpers';
 import minecraftLookup from './libs/minecraft';
-import Router from './libs/router';
 import steamLookup from './libs/steam';
 import xboxLookup from './libs/xbox';
 
-import type { Environment } from './types';
+import type { Environment, HonoEnv } from './types';
 
 const DEBUG = false;
 
@@ -43,8 +45,6 @@ const addHeaders = {
 	].join(' '),
 } as const;
 
-const cacheTtl = 60 * 60 * 24 * 5; // 5 days
-
 const apiHeader = {
 	'content-type': 'application/json; charset=utf-8',
 	'access-control-allow-origin': '*',
@@ -71,44 +71,41 @@ class copyrightUpdate {
 		}
 	}
 }
-const filesRegex =
-	/(.*\.(ac3|avi|bmp|br|bz2|css|cue|dat|doc|docx|dts|eot|exe|flv|gif|gz|htm|html|ico|img|iso|jpeg|jpg|js|json|map|mkv|mp3|mp4|mpeg|mpg|ogg|pdf|png|ppt|pptx|qt|rar|rm|svg|swf|tar|tgz|ttf|txt|wav|webp|webm|webmanifest|woff|woff2|xls|xlsx|xml|zip))$/;
+const filesRegex = /(.*\.(ac3|avi|bmp|br|bz2|css|cue|dat|doc|docx|dts|eot|exe|flv|gif|gz|htm|html|ico|img|iso|jpeg|jpg|js|json|map|mkv|mp3|mp4|mpeg|mpg|ogg|pdf|png|ppt|pptx|qt|rar|rm|svg|swf|tar|tgz|ttf|txt|wav|webp|webm|webmanifest|woff|woff2|xls|xlsx|xml|zip))$/;
 
-// setup router for each service handler. Create this outside of each request to marginally improve performance
-const router = new Router();
-router.get('.*/api/player/minecraft/.*', minecraftLookup);
-router.get('.*/api/player/steam/.*', steamLookup);
-router.get('.*/api/player/xbox/.*', xboxLookup);
+const app = new Hono<HonoEnv>();
 
-async function handleRequest(
-	request: Request,
-	env: Environment,
-	ctx: ExecutionContext,
-) {
-	if (request.method === 'OPTIONS') {
-		return new Response(null, {
-			status: 204,
-			headers: {
-				'Access-Control-Allow-Origin': '*',
-				'Access-Control-Allow-Methods': 'GET, OPTIONS',
-				'Access-Control-Allow-Headers': '*',
-				'Access-Control-Max-Age': '86400',
-			},
-		});
+// CORS middleware for all routes
+app.use('*', cors({
+	origin: '*',
+	allowMethods: ['GET', 'OPTIONS'],
+	allowHeaders: ['*'],
+	maxAge: 86400,
+}));
+
+// middleware to set start time and parse URL once
+app.use('*', async (ctx, next) => {
+	ctx.set('startTime', new Date());
+	ctx.set('url', new URL(ctx.req.url));
+	await next();
+});
+
+// static asset serving middleware (for non-API routes)
+app.use('*', async (ctx, next) => {
+	const url = ctx.get('url');
+
+	// Skip if this is an API route
+	if (url.pathname.startsWith('/api')) {
+		await next();
+		return;
 	}
-	// hacky way to get a start time
-	env.startTime = new Date();
 
-	const url = new URL(request.url);
-
-	// first try to get assets from KV, if not API
+	// Try to get asset from KV
 	let asset = null;
 	try {
-		if (!url.pathname.startsWith('/api')) {
-			asset = await env.ASSETS.fetch(request);
-		}
+		asset = await ctx.env.ASSETS.fetch(ctx.req.raw);
 	} catch {
-		// nothing to do. Fall through to API and 404 below
+		// nothing to do. Fall through to next middleware and eventual 404
 	}
 
 	if (asset) {
@@ -122,8 +119,8 @@ async function handleRequest(
 		// we have something from Workers Sites. Use it
 		if (asset.headers.get('content-type') === 'text/html') {
 			// set security headers on html pages
-			for (const name of Object.keys(addHeaders)) {
-				asset.headers.set(name, addHeaders[name as keyof typeof addHeaders]);
+			for (const [name, value] of Object.entries(addHeaders)) {
+				asset.headers.set(name, value);
 			}
 		}
 		// override content type header for favicon svg
@@ -140,8 +137,15 @@ async function handleRequest(
 		return asset;
 	}
 
-	// no KV asset, continue
+	// No asset found, continue to next handler
+	await next();
+});
+
+// Edge caching middleware for API routes
+app.use('/api/*', async (ctx, next) => {
+	const url = ctx.get('url');
 	const cache = caches.default; // Cloudflare edge caching
+
 	let type = 'unknown';
 	if (url.pathname.includes('/player/minecraft')) {
 		type = 'minecraft';
@@ -150,13 +154,17 @@ async function handleRequest(
 	} else if (url.pathname.includes('/player/xbox')) {
 		type = 'xbox';
 	}
-	let response = await cache.match(url); // try to find match for this request in the edge cache
+
+	const lookupQuery = url.pathname.split('/').pop() || '';
+	ctx.set('lookupQuery', lookupQuery);
+
+	const response = await cache.match(ctx.req.url); // try to find match for this request in the edge cache
 	if (process.env.NODE_ENV !== 'development' && response) {
 		// use cache found on Cloudflare edge. Set X-Worker-Cache header for helpful debug
 		const newHdrs = new Headers(response.headers);
 		newHdrs.set('X-Worker-Cache', 'true');
 
-		writeDataPoint(env, request, {
+		writeDataPoint(ctx, {
 			cached: true,
 			type,
 			status: response.status,
@@ -167,101 +175,94 @@ async function handleRequest(
 			headers: newHdrs,
 		});
 	}
-	// get data using router
-	let responseData: Record<string, unknown> = {};
-	try {
-		responseData = await router.route(request, env, ctx);
-	} catch (err) {
-		// handle errors in router. Ensure we create well-formed JSON responses
-		console.error('ERROR', err);
-		let responseData = helpers.code('api.unknown_error') as Record<
-			string,
-			unknown
-		>;
-		if (err instanceof helpers.failCode || err instanceof helpers.errorCode) {
-			const { message, code, data } = err;
-			responseData = { message, code: code, data };
-			responseData.success = false;
-			responseData.error = err instanceof helpers.errorCode;
-		}
-		// set status code appropriately
-		let status = 400;
+
+	// Store type for use in error handler
+	ctx.set('type', type);
+
+	await next();
+
+	// Cache the response after handler completes
+	if (ctx.res) {
+		const jsonResponse = ctx.res.clone();
+
+		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, ctx.res.clone()));
+
+		// if querying for username, store a cache for the ID of this player too
+		ctx.executionCtx.waitUntil((async () => {
+			try {
+				const url = ctx.get('url');
+				const lookupQuery = ctx.get('lookupQuery');
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				const responseData = await jsonResponse.json<any>();
+				if (responseData?.data?.player?.id && responseData?.data?.player?.id !== lookupQuery) {
+					const newUrl = new URL(url);
+					newUrl.pathname = newUrl.pathname.slice(0, newUrl.pathname.length - lookupQuery.length) + responseData.data.player.id;
+					// Clone the original response one more time for the second cache entry
+					await cache.put(newUrl, ctx.res.clone());
+				}
+			} catch {
+				// we tried to cache more. No problem if this doesn't work
+			}
+		})());
+	}
+});
+
+app.onError((err, ctx) => {
+	console.error('ERROR', err);
+
+	const type = ctx.get('type') || 'unknown';
+
+	let responseData = helpers.code('api.unknown_error') as Record<
+		string,
+		unknown
+	>;
+	if (err instanceof helpers.failCode || err instanceof helpers.errorCode) {
+		const { message, code, data } = err;
+		responseData = { message, code: code, data };
+		responseData.success = false;
+		responseData.error = err instanceof helpers.errorCode;
+	}
+
+	// set status code appropriately
+	let status: 400 | 404 | 429 | 500 = 400;
+	// @ts-expect-error errors aren't properly typed
+	if (err?.statusCode && typeof err.statusCode === 'number') {
 		// @ts-expect-error errors aren't properly typed
-		if (err?.statusCode && typeof err.statusCode === 'number') {
-			// @ts-expect-error errors aren't properly typed
-			status = err.statusCode;
-		} else if (responseData.error) {
-			status = 500;
-		}
-		// handle `api.404` code specifically as a 404 status
+		status = err.statusCode;
+	} else if (responseData.error) {
+		status = 500;
+	}
+	// handle `api.404` code specifically as a 404 status
+	// @ts-expect-error errors aren't properly typed
+	if (err.code === 'api.404') {
+		status = 404;
+	}
+
+	writeDataPoint(ctx, {
+		type,
 		// @ts-expect-error errors aren't properly typed
-		if (err.code === 'api.404') {
-			status = 404;
-		}
-		response = new Response(JSON.stringify(responseData), {
-			status,
-			headers: { ...apiHeader },
-		});
-		writeDataPoint(env, request, {
-			type,
-			// @ts-expect-error errors aren't properly typed
-			error: err.code || 'unknown',
-			status,
-		});
-	}
+		error: err.code || 'unknown',
+		status,
+	});
 
-	if (request.method === 'OPTIONS' && responseData instanceof Response) {
-		return responseData;
-	}
-	// actual responses (KV, etc.)
-	if (responseData instanceof Response) {
-		response = responseData;
-	} else if (!response) {
-		// not an error. Success, but json data from player lookup. Construct real response
-		const responseFull = helpers.code('player.found', responseData) as Record<
-			string,
-			unknown
-		>;
-		responseFull.success = true;
-		response = new Response(JSON.stringify(responseFull), {
-			status: 200,
-			headers: { ...apiHeader },
-		});
-	}
-	// construct new response with mutable headers
-	response = new Response(response.body, response);
-	// set cache header on 200 response
-	if (response.status === 200) {
-		response.headers.set('Cache-Control', 'public, max-age=' + cacheTtl);
-	} else {
-		// only cache other things for 5 minutes (errors, 404s, etc.)
-		response.headers.set('Cache-Control', 'public, max-age=300');
-	}
+	return ctx.json(responseData, status, apiHeader);
+});
 
-	ctx.waitUntil(cache.put(url, response.clone())); // store current query in cache
+// Not found handler (404)
+app.notFound((ctx) => {
+	const responseData = helpers.code('api.404');
+	return ctx.json(responseData, 404, apiHeader);
+});
 
-	// if querying for username, store a cache for the ID of this player too
-	try {
-		const lookupQuery = url.pathname.split('/').pop() || '';
-		// @ts-expect-error players aren't properly typed
-		if (responseData?.player?.id && responseData?.player?.id !== lookupQuery) {
-			const newUrl = new URL(url.toString());
-			// @ts-expect-error players aren't properly typed
-			newUrl.pathname = newUrl.pathname.slice(0, newUrl.pathname.length - lookupQuery.length) + responseData.player.id;
-			ctx.waitUntil(cache.put(newUrl, response.clone())); // store in cache
-		}
-	} catch {
-		// we tried to cache more. No problem if this doesn't work
-	}
-
-	return response;
-}
+// API routes
+app.get('/api/player/minecraft/:query', minecraftLookup);
+app.get('/api/player/steam/:query', steamLookup);
+app.get('/api/player/xbox/:query', xboxLookup);
 
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
 		try {
-			const result = await handleRequest(request, env, ctx);
-			return result;
+			return app.fetch(request, env, ctx);
 		} catch (err) {
 			if (DEBUG) {
 				// @ts-expect-error errors aren't properly typed
@@ -272,7 +273,7 @@ export default {
 			const responseData = helpers.code('api.internal_error');
 			return new Response(JSON.stringify(responseData), {
 				status: 500,
-				headers: { ...apiHeader },
+				headers: apiHeader,
 			});
 		}
 	},
