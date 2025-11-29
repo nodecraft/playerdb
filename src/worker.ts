@@ -250,13 +250,27 @@ app.onError((err, ctx) => {
 		status,
 	});
 
-	return ctx.json(responseData, status, apiHeader);
+	const errorResponse = ctx.json(responseData, status, apiHeader);
+
+	if (ctx.req.url.includes('/api/')) {
+		const cache = caches.default;
+		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, errorResponse.clone()));
+	}
+
+	return errorResponse;
 });
 
 // Not found handler (404)
 app.notFound((ctx) => {
 	const responseData = helpers.code('api.404');
-	return ctx.json(responseData, 404, apiHeader);
+	const notFoundResponse = ctx.json(responseData, 404, apiHeader);
+
+	if (ctx.req.url.includes('/api/')) {
+		const cache = caches.default;
+		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, notFoundResponse.clone()));
+	}
+
+	return notFoundResponse;
 });
 
 // API routes
