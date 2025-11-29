@@ -1,4 +1,5 @@
-import type { Environment } from '../types';
+import type { HonoEnv } from '../types';
+import type { Context } from 'hono';
 
 type AnalyticsData = {
 	type: string;
@@ -8,14 +9,15 @@ type AnalyticsData = {
 	status?: number;
 };
 export function writeDataPoint(
-	env: Environment,
-	request: Request,
+	ctx: Context<HonoEnv>,
 	data: AnalyticsData,
 ) {
 	/* ORDER HERE IS VERY IMPORTANT. IF ANYTHING CHANGES, MUST BE APPENDED */
 	const endTime = Date.now();
-	const responseTime = env.startTime ? endTime - env.startTime.getTime() : 0;
+	const startTime = ctx.get('startTime');
+	const responseTime = startTime ? endTime - startTime.getTime() : 0;
 
+	const request = ctx.req.raw;
 	let userAgent = request.headers.get('user-agent') || 'unknown';
 	// anonymous Tiers user agents
 	// They look like: Tiers 0.4.1_1.21-1.21.1 on 1.21.1 played by cherryjimbo
@@ -44,11 +46,11 @@ export function writeDataPoint(
 			data.status || 0,
 		],
 	};
-	if (!env.PLAYERDB_ANALYTICS) {
+	if (!ctx.env.PLAYERDB_ANALYTICS) {
 		return;
 	}
 	try {
-		env.PLAYERDB_ANALYTICS.writeDataPoint(reportData);
+		ctx.env.PLAYERDB_ANALYTICS.writeDataPoint(reportData);
 	} catch (err) {
 		console.error(err);
 	}

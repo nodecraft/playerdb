@@ -2,10 +2,12 @@
 import { connect } from 'cloudflare:sockets';
 
 import { writeDataPoint } from './analytics';
+import * as helperCodes from './helpers';
 import { errorCode, failCode } from './helpers';
 import { parseResponse } from './http';
 
-import type { Environment } from '../types';
+import type { Environment, HonoEnv } from '../types';
+import type { Context } from 'hono';
 
 const avatarURL = 'https://crafthead.net/avatar/';
 const apiPrimary = 'https://api.mojang.com/';
@@ -15,6 +17,14 @@ const apiServices = 'https://api.minecraftservices.com/';
 const flyProxy = 'https://playerdb.fly.dev/';
 const oneDay = 60 * 60 * 24;
 const cacheTtl = oneDay * 7; // 7 days
+const responseCacheTtl = oneDay * 5; // 5 days
+
+const responseHeaders = {
+	'content-type': 'application/json; charset=utf-8',
+	'access-control-allow-origin': '*',
+	'access-control-allow-methods': 'GET, OPTIONS',
+	'Cache-Control': `public, max-age=${responseCacheTtl}`,
+} as const;
 
 type Payload = {
 	username?: string;
@@ -125,16 +135,17 @@ const helpers = {
 			const decoder = new TextDecoder();
 
 			// loop and append data to buffer
-			let result = '';
+			const chunks: string[] = [];
 			// eslint-disable-next-line no-constant-condition
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) {
 					break;
 				}
-				result += decoder.decode(value);
+				chunks.push(decoder.decode(value));
 			}
 			socket.close();
+			const result = chunks.join('');
 			const parsed = parseResponse(result);
 			clearTimeout(timeout);
 
@@ -295,6 +306,9 @@ const mojangLib = {
 			// nothing in KV
 		}
 		if (results) {
+			// Add cache hit metadata for monitoring
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(results as any).cached_at = (results as any).cached_at || Date.now();
 			return results;
 		}
 		// no cache, do full lookup
@@ -333,9 +347,11 @@ const mojangLib = {
 		}
 
 		// now we have their ID we can do a UUID lookup
+		// Note: profile() will cache the UUID→profile mapping in KV
 		results = await mojangLib.profile(results.id, env, ctx);
 		results.formatted_id = helpers.formatId(results.id);
 		results.cached_at = Date.now();
+		// Cache the username→profile mapping (profile cache is already handled in profile())
 		ctx.waitUntil(
 			env.PLAYERDB_CACHE.put(kvKey, JSON.stringify(results), {
 				expirationTtl: cacheTtl,
@@ -396,12 +412,12 @@ const mojangLib = {
 };
 
 const lookup = async function lookup(
-	request: Request,
-	env: Environment,
-	ctx: ExecutionContext,
+	honoCtx: Context<HonoEnv>,
 ) {
-	const url = new URL(request.url);
-	const username = url.pathname.split('/').pop() || ''; // get last segment of URL pathname
+	const env = honoCtx.env;
+	const ctx = honoCtx.executionCtx as ExecutionContext;
+
+	const username = honoCtx.get('lookupQuery') || '';
 
 	// no username, return 404
 	if (username === '') {
@@ -433,6 +449,7 @@ const lookup = async function lookup(
 				if (textures.textures && textures.textures.SKIN) {
 					returnData.skin_texture = textures.textures.SKIN.url;
 				}
+				break; // Found textures property, no need to continue
 			}
 		}
 		// Also push properties into the return data
@@ -446,12 +463,20 @@ const lookup = async function lookup(
 	// but for backwards compatibility, still return this property, just empty
 	returnData.name_history = [];
 
-	writeDataPoint(env, request, {
+	writeDataPoint(honoCtx, {
 		type: 'minecraft',
 		request_type: profile.request_type,
 		status: 200,
 	});
-	return { player: returnData };
+
+	// Construct response with success wrapper
+	const responseFull = helperCodes.code('player.found', { player: returnData }) as Record<
+		string,
+		unknown
+	>;
+	responseFull.success = true;
+
+	return honoCtx.json(responseFull, 200, responseHeaders);
 };
 
 export default lookup;

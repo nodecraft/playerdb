@@ -60,4 +60,10 @@ class errorCode extends Error {
 	}
 }
 
-export { code, failCode, errorCode };
+const camelCase = (str: string): string => str
+	.toLowerCase()
+	.replaceAll(/[^\dA-Za-z]+(.)/g, (_, chr) => chr.toUpperCase());
+
+const camelCaseCache: Record<string, string> = {};
+
+export { code, failCode, errorCode, camelCase, camelCaseCache };

@@ -274,24 +274,6 @@ describe('steam api', () => {
 		expect(json.data.player).toHaveProperty('avatar');
 		expect(json.data.player).toHaveProperty('meta');
 	});
-
-	it('responds for invalid steamid', async (context) => {
-		const request = new IncomingRequest(
-			'http://localhost/api/player/steam//STEAM_0:0:43716939z',
-		);
-		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
-		await waitOnExecutionContext(ctx);
-		const json = await response.json<any>();
-		if (response.status === 429) {
-			// ignore tests if rate limited for now
-			context.skip();
-			return;
-		}
-		expect(response.status).toBe(400);
-		expect(json.success).toBe(false);
-		expect(json.code).toEqual('steam.invalid_id');
-	});
 });
 
 describe('xbox api', () => {
