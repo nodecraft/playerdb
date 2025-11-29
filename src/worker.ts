@@ -49,6 +49,7 @@ const apiHeader = {
 	'content-type': 'application/json; charset=utf-8',
 	'access-control-allow-origin': '*',
 	'access-control-allow-methods': 'GET, OPTIONS',
+	'Cache-Control': 'public, max-age=300', // Cache errors for 5 minutes
 };
 
 class copyrightUpdate {
@@ -183,9 +184,12 @@ app.use('/api/*', async (ctx, next) => {
 
 	// Cache the response after handler completes
 	if (ctx.res) {
-		const jsonResponse = ctx.res.clone();
+		const primaryCacheResponse = ctx.res.clone();
+		const secondaryCacheResponse = ctx.res.clone();
+		const jsonParseResponse = ctx.res.clone();
 
-		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, ctx.res.clone()));
+		// Cache primary URL
+		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, primaryCacheResponse));
 
 		// if querying for username, store a cache for the ID of this player too
 		ctx.executionCtx.waitUntil((async () => {
@@ -193,15 +197,16 @@ app.use('/api/*', async (ctx, next) => {
 				const url = ctx.get('url');
 				const lookupQuery = ctx.get('lookupQuery');
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				const responseData = await jsonResponse.json<any>();
+				const responseData = await jsonParseResponse.json<any>();
 				if (responseData?.data?.player?.id && responseData?.data?.player?.id !== lookupQuery) {
 					const newUrl = new URL(url);
 					newUrl.pathname = newUrl.pathname.slice(0, newUrl.pathname.length - lookupQuery.length) + responseData.data.player.id;
-					// Clone the original response one more time for the second cache entry
-					await cache.put(newUrl, ctx.res.clone());
+					// Use the pre-cloned response for secondary cache
+					await cache.put(newUrl, secondaryCacheResponse);
 				}
-			} catch {
+			} catch (err) {
 				// we tried to cache more. No problem if this doesn't work
+				console.error('Secondary cache error:', err);
 			}
 		})());
 	}
