@@ -7,12 +7,14 @@ import {
 	failCode,
 } from './helpers';
 
-import type { HonoEnv } from '../types';
+import type { Environment, HonoEnv } from '../types';
 import type { Context } from 'hono';
 
 const apiUrl = 'https://xbl.io/';
 const apiVersion = '/api/v2/';
-const cacheTtl = 60 * 60 * 24 * 5; // 5 days
+const oneDay = 60 * 60 * 24;
+const kvCacheTtl = oneDay * 7; // 7 days for KV
+const cacheTtl = oneDay * 5; // 5 days for edge/response
 
 const responseHeaders = {
 	'content-type': 'application/json; charset=utf-8',
@@ -85,6 +87,7 @@ const helpers = {
 			});
 		}
 
+		body.request_type = 'http';
 		return body;
 	},
 	parse(data: Record<string, any>) {
@@ -96,7 +99,7 @@ const helpers = {
 		}
 
 		// Process settings efficiently
-		for (const setting of raw.settings) {
+		for (const setting of raw.settings || []) {
 			// Check if it's a mapped field
 			if (helpers.map[setting.id as keyof typeof helpers.map]) {
 				player[helpers.map[setting.id as keyof typeof helpers.map]] = setting.value;
@@ -124,22 +127,38 @@ const helpers = {
 	skipFields: new Set(['GameDisplayPicRaw']),
 };
 
-const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
-	const env = honoCtx.env;
+async function getProfile(
+	query: string,
+	env: Environment,
+	ctx: ExecutionContext,
+): Promise<{ data: Record<string, unknown>; request_type: string; }> {
+	// Normalize query for cache key
+	const kvKey = 'xbox-profile-' + query.toLowerCase();
 
-	const xuid = honoCtx.get('lookupQuery');
-
-	if (!xuid) {
-		throw new failCode('api.404');
+	// Check KV cache first
+	try {
+		if (env.BYPASS_CACHE !== 'true') {
+			const cached = await env.PLAYERDB_CACHE.get(kvKey, {
+				type: 'json',
+				cacheTtl: oneDay,
+			});
+			if (cached) {
+				return { data: cached as Record<string, unknown>, request_type: 'kv_cache' };
+			}
+		}
+	} catch {
+		// KV lookup failed, continue with API
 	}
-	const isNumber = xuid !== undefined && !Number.isNaN(Number.parseInt(xuid));
+
+	const isNumber = !Number.isNaN(Number.parseInt(query));
 	let returnData: Record<string, unknown> = {};
 	let data;
+
 	if (isNumber) {
 		// lookup by ID
-		returnData.id = xuid;
+		returnData.id = query;
 		data = await helpers.request({
-			path: `account/${xuid}`,
+			path: `account/${query}`,
 			headers: {
 				'X-Authorization': env.XBOX_APIKEY,
 			},
@@ -149,17 +168,53 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 		data = await helpers.request({
 			path: 'friends/search',
 			qs: {
-				gt: xuid || '',
+				gt: query,
 			},
 			headers: {
 				'X-Authorization': env.XBOX_APIKEY,
 			},
 		});
 	}
-	// parse the response data, and merge it with the existing returnData
+
+	// Parse the response data
 	returnData = { ...helpers.parse(data), ...returnData };
+	returnData.cached_at = Date.now();
+
+	// Cache the result by original query
+	ctx.waitUntil(
+		env.PLAYERDB_CACHE.put(kvKey, JSON.stringify(returnData), {
+			expirationTtl: kvCacheTtl,
+		}),
+	);
+
+	// Also cache by XUID if different from query
+	if (returnData.id && String(returnData.id).toLowerCase() !== query.toLowerCase()) {
+		const xuidKey = 'xbox-profile-' + String(returnData.id).toLowerCase();
+		ctx.waitUntil(
+			env.PLAYERDB_CACHE.put(xuidKey, JSON.stringify(returnData), {
+				expirationTtl: kvCacheTtl,
+			}),
+		);
+	}
+
+	return { data: returnData, request_type: data.request_type };
+}
+
+const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
+	const env = honoCtx.env;
+	const ctx = honoCtx.executionCtx as ExecutionContext;
+
+	const query = honoCtx.get('lookupQuery');
+
+	if (!query) {
+		throw new failCode('api.404');
+	}
+
+	const { data: returnData, request_type } = await getProfile(query, env, ctx);
+
 	writeDataPoint(honoCtx, {
 		type: 'xbox',
+		request_type,
 		status: 200,
 	});
 

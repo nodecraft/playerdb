@@ -101,13 +101,26 @@ const helpers = {
 			url.search = new URLSearchParams(data.qs).toString();
 		}
 
-		const timeout = setTimeout(() => {
-			console.warn('TCP request timed out');
-			throw new errorCode('minecraft.api_failure');
-		}, 5000);
+		const timeoutMs = 5000;
+		let socket: Awaited<ReturnType<typeof connect>> | null = null;
+		let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-		try {
-			const socket = await connect(
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timeoutId = setTimeout(() => {
+				// Close socket on timeout to free resources
+				if (socket) {
+					try {
+						socket.close();
+					} catch {
+						// Ignore close errors
+					}
+				}
+				reject(new errorCode('minecraft.api_failure', { message: 'TCP request timed out' }));
+			}, timeoutMs);
+		});
+
+		const requestPromise = (async () => {
+			socket = await connect(
 				{
 					hostname: url.hostname,
 					port: 443,
@@ -128,69 +141,41 @@ const helpers = {
 				'Connection: close',
 			];
 			const joined = rawHTTPReq.join('\r\n');
-			const encoded = encoder.encode(`${joined}\r\n\r\n\r\n`);
+			const encoded = encoder.encode(`${joined}\r\n\r\n`);
 			await writer.write(encoded);
 
 			const reader = socket.readable.getReader();
-			const decoder = new TextDecoder();
 
-			// loop and append data to buffer
-			const chunks: string[] = [];
+			// Collect all chunks as Uint8Arrays first, then decode at the end.
+			// This avoids issues with multi-byte UTF-8 characters being split across TCP chunks.
+			const chunks: Uint8Array[] = [];
+			let totalLength = 0;
 			// eslint-disable-next-line no-constant-condition
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) {
 					break;
 				}
-				chunks.push(decoder.decode(value));
+				chunks.push(value);
+				totalLength += value.length;
 			}
 			socket.close();
-			const result = chunks.join('');
-			const parsed = parseResponse(result);
-			clearTimeout(timeout);
 
-			if (parsed.statusCode === 429) {
-				// rate limited, we're done
-				throw new errorCode('minecraft.rate_limited', { statusCode: 429 });
+			// Concatenate all chunks and decode once
+			const combined = new Uint8Array(totalLength);
+			let offset = 0;
+			for (const chunk of chunks) {
+				combined.set(chunk, offset);
+				offset += chunk.length;
 			}
-			let body = null;
-			try {
-				body = JSON.parse(parsed.bodyData);
-			} catch {
-				// we tried
-			}
-			if (
-				parsed.statusCode === 404 &&
-				body?.errorMessage?.includes?.('Couldn\'t find any profile with name')
-			) {
-				throw new failCode('minecraft.invalid_username', { statusCode: 400 });
-			}
+			return new TextDecoder().decode(combined);
+		})();
 
-			if (parsed.statusCode === 204 && !body) {
-				// bad username
-				throw new failCode('minecraft.invalid_username', { statusCode: 400 });
-			}
-
-			if (parsed.statusCode !== 200) {
-				// other API failure
-				console.log(
-					'got non-200 response from TCP mojang',
-					parsed.statusCode,
-					body,
-				);
-				throw new errorCode('minecraft.api_failure');
-			}
-
-			const contentType = parsed.headers['content-type'];
-			if (!contentType || !contentType.includes('json')) {
-				throw new errorCode('minecraft.non_json', {
-					contentType: contentType || null,
-				});
-			}
-			body.request_type = 'tcp';
-			return body;
+		let result: string;
+		try {
+			result = await Promise.race([requestPromise, timeoutPromise]);
 		} catch (err) {
-			// pass through mojang errors
+			// pass through minecraft errors (including timeout)
 			// @ts-expect-error error not properly typed
 			if (err?.code?.startsWith?.('minecraft.')) {
 				throw err;
@@ -198,7 +183,55 @@ const helpers = {
 			// catch socket errors generically
 			console.error(err);
 			throw new errorCode('minecraft.api_failure');
+		} finally {
+			// Clear timeout if request completed successfully
+			if (timeoutId) {
+				clearTimeout(timeoutId);
+			}
 		}
+
+		const parsed = parseResponse(result);
+
+		if (parsed.statusCode === 429) {
+			// rate limited, we're done
+			throw new errorCode('minecraft.rate_limited', { statusCode: 429 });
+		}
+		let body = null;
+		try {
+			body = JSON.parse(parsed.bodyData);
+		} catch {
+			// we tried
+		}
+		if (
+			parsed.statusCode === 404 &&
+			body?.errorMessage?.includes?.('Couldn\'t find any profile with name')
+		) {
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
+
+		if (parsed.statusCode === 204 && !body) {
+			// bad username
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
+
+		if (parsed.statusCode !== 200) {
+			// other API failure
+			console.log(
+				'got non-200 response from TCP mojang',
+				parsed.statusCode,
+				body,
+			);
+			throw new errorCode('minecraft.api_failure');
+		}
+
+		const contentType = parsed.headers['content-type'];
+		if (!contentType || !contentType.includes('json')) {
+			throw new errorCode('minecraft.non_json', {
+				contentType: contentType || null,
+			});
+		}
+		body.request_type = 'tcp';
+		return body;
 	},
 	// hit mojang api
 	async request(
@@ -211,7 +244,7 @@ const helpers = {
 			url.search = new URLSearchParams(data.qs).toString();
 		}
 		if (data.host?.includes(flyProxy)) {
-			url.searchParams.set('api_key', (env as Environment).NODECRAFT_API_KEY || '');
+			url.searchParams.set('api_key', env.NODECRAFT_API_KEY || '');
 		}
 		const response = await fetch(url.href, {
 			method: 'GET',
@@ -272,17 +305,7 @@ const helpers = {
 	},
 	formatId(id: string) {
 		// take a mojang UUID in format `ef6134805b6244e4a4467fbe85d65513` and return `ef613480-5b62-44e4-a446-7fbe85d65513`
-		return [
-			id.slice(0, 8),
-			'-',
-			id.slice(8, 12),
-			'-',
-			id.slice(12, 16),
-			'-',
-			id.slice(16, 20),
-			'-',
-			id.slice(20),
-		].join('');
+		return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
 	},
 };
 
@@ -293,7 +316,7 @@ const mojangLib = {
 		env: Environment,
 		ctx: ExecutionContext,
 	) {
-		const kvKey = 'minecraft-username-' + username;
+		const kvKey = 'minecraft-username-' + username.toLowerCase();
 		let results = null;
 		try {
 			if (env.BYPASS_CACHE !== 'true') {
@@ -360,7 +383,7 @@ const mojangLib = {
 		return results;
 	},
 	async profile(uuid: string, env: Environment, ctx: ExecutionContext) {
-		const kvKey = 'minecraft-profile-' + uuid;
+		const kvKey = 'minecraft-profile-' + uuid.toLowerCase().replaceAll('-', '');
 		let results = null;
 		try {
 			if (env.BYPASS_CACHE !== 'true') {
