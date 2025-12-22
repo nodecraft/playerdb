@@ -48,7 +48,14 @@ const helpers = {
 			url.search = new URLSearchParams(data.qs).toString();
 		}
 
-		const response = await fetch(url.href, payload);
+		let response;
+		try {
+			response = await fetch(url.href, payload);
+		} catch (err) {
+			// Handle timeout and network errors
+			console.error('Xbox API request failed:', err);
+			throw new errorCode('xbox.api_failure');
+		}
 
 		if (response.status !== 200) {
 			// other API failure

@@ -2,5 +2,6 @@
 	"xbox.not_found": "No Xbox Live account found.",
 	"xbox.non_json": "Xbox Live API returned an invalid, non JSON response.",
 	"xbox.bad_response_code": "Xbox Live API returned an invalid response HTTP code.",
-	"xbox.bad_response": "API server responded with an error."
+	"xbox.bad_response": "API server responded with an error.",
+	"xbox.api_failure": "Xbox Live API request failed."
 }

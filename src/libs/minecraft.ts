@@ -50,18 +50,25 @@ const helpers = {
 			url.searchParams.set('id', payload.id);
 		}
 
-		const response = await fetch(url.href, {
-			headers: {
-				'content-type': 'application/json',
-				'accept': 'application/json',
-			},
-			method: 'GET',
-			cf: {
-				cacheEverything: true,
-				cacheTtl,
-			},
-			signal: AbortSignal.timeout(5000),
-		});
+		let response;
+		try {
+			response = await fetch(url.href, {
+				headers: {
+					'content-type': 'application/json',
+					'accept': 'application/json',
+				},
+				method: 'GET',
+				cf: {
+					cacheEverything: true,
+					cacheTtl,
+				},
+				signal: AbortSignal.timeout(5000),
+			});
+		} catch (err) {
+			// Handle timeout and network errors
+			console.error('nodecraft API request failed:', err);
+			throw new errorCode('minecraft.api_failure');
+		}
 		if (response.status === 429) {
 			// rate limited, we're done
 			throw new errorCode('minecraft.rate_limited', { statusCode: 429 });
@@ -177,10 +184,10 @@ const helpers = {
 		} catch (err) {
 			// pass through minecraft errors (including timeout)
 			// @ts-expect-error error not properly typed
-			if (err?.code?.startsWith?.('minecraft.')) {
+			if (typeof err?.code === 'string' && err.code.startsWith('minecraft.')) {
 				throw err;
 			}
-			// catch socket errors generically
+			// catch socket errors generically (including DOMException with numeric codes)
 			console.error(err);
 			throw new errorCode('minecraft.api_failure');
 		} finally {
@@ -246,14 +253,21 @@ const helpers = {
 		if (data.host?.includes(flyProxy)) {
 			url.searchParams.set('api_key', env.NODECRAFT_API_KEY || '');
 		}
-		const response = await fetch(url.href, {
-			method: 'GET',
-			cf: {
-				cacheEverything: true,
-				cacheTtl,
-			},
-			signal: AbortSignal.timeout(5000),
-		});
+		let response;
+		try {
+			response = await fetch(url.href, {
+				method: 'GET',
+				cf: {
+					cacheEverything: true,
+					cacheTtl,
+				},
+				signal: AbortSignal.timeout(5000),
+			});
+		} catch (err) {
+			// Handle timeout and network errors
+			console.error('Mojang API request failed:', err);
+			throw new errorCode('minecraft.api_failure');
+		}
 
 		if (response.status === 429 || response.status === 403) {
 			if (data.host && data.host.includes(flyProxy)) {
