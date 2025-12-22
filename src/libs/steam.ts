@@ -4,11 +4,13 @@ import { writeDataPoint } from './analytics';
 import * as helperCodes from './helpers';
 import { errorCode, failCode } from './helpers';
 
-import type { HonoEnv } from '../types';
+import type { Environment, HonoEnv } from '../types';
 import type { Context } from 'hono';
 
 const apiUrl = 'https://api.steampowered.com/';
-const cacheTtl = 60 * 60 * 24 * 5; // 5 days
+const oneDay = 60 * 60 * 24;
+const kvCacheTtl = oneDay * 7; // 7 days for KV
+const cacheTtl = oneDay * 5; // 5 days for edge/response
 
 const responseHeaders = {
 	'content-type': 'application/json; charset=utf-8',
@@ -73,17 +75,28 @@ const helpers = {
 	},
 };
 
-const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
-	const env = honoCtx.env;
+async function getProfile(
+	query: string,
+	env: Environment,
+	ctx: ExecutionContext,
+): Promise<{ data: Record<string, any>; request_type: string; }> {
+	// Normalize query for cache key
+	const kvKey = 'steam-profile-' + query.toLowerCase();
 
-	let steamID = honoCtx.get('lookupQuery') || '';
-
-	if (steamID === '') {
-		throw new failCode('api.404');
+	// Check KV cache first
+	try {
+		if (env.BYPASS_CACHE !== 'true') {
+			const cached = await env.PLAYERDB_CACHE.get(kvKey, {
+				type: 'json',
+				cacheTtl: oneDay,
+			});
+			if (cached) {
+				return { data: cached as Record<string, any>, request_type: 'kv_cache' };
+			}
+		}
+	} catch {
+		// KV lookup failed, continue with API
 	}
-
-	let id = null;
-	const returnData: Record<string, any> = { meta: {} };
 
 	const APIKeys = [
 		env.STEAM_APIKEY,
@@ -91,10 +104,11 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 		env.STEAM_APIKEY3,
 		env.STEAM_APIKEY4,
 	].filter(Boolean);
+	const useAPIKey = APIKeys[Math.floor(Math.random() * APIKeys.length)] as string;
 
-	const useAPIKey = APIKeys[Math.floor(Math.random() * APIKeys.length)];
+	let steamID = query;
 
-	// first try to resolve vanity URL. Wrap this in a try/catch because we don't mind if it fails
+	// Try to resolve vanity URL if not already a known ID format
 	if (
 		!steamID.startsWith('STEAM_') &&
 		!steamID.startsWith('7656119') &&
@@ -105,7 +119,7 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 			const vanityURLData = await helpers.request({
 				path: 'ISteamUser/ResolveVanityURL/v1',
 				qs: {
-					key: useAPIKey as string,
+					key: useAPIKey,
 					vanityurl: steamID,
 				},
 			});
@@ -117,7 +131,8 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 		}
 	}
 
-	// then lookup by SteamID
+	// Parse and validate SteamID
+	let id;
 	try {
 		id = new steamid(steamID);
 	} catch (err) {
@@ -127,17 +142,19 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 	if (!id.isValid()) {
 		throw new failCode('steam.invalid_id');
 	}
+
+	const returnData: Record<string, any> = { meta: {} };
 	returnData.id = id.getSteamID64();
 	returnData.meta.steam2id = id.steam2();
 	returnData.meta.steam2id_new = id.steam2(true);
 	returnData.meta.steam3id = id.steam3();
 	returnData.meta.steam64id = returnData.id;
 
-	// then getPlayerSummaries
+	// Get player summaries
 	const playerSummaries = await helpers.request({
 		path: 'ISteamUser/GetPlayerSummaries/v2',
 		qs: {
-			key: useAPIKey as string,
+			key: useAPIKey,
 			steamids: returnData.id,
 		},
 	});
@@ -147,19 +164,51 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 	) {
 		throw new failCode('steam.invalid_id');
 	}
+
 	const playerSummary = playerSummaries.response.players[0];
 	returnData.avatar = playerSummary.avatarfull;
 	returnData.username = playerSummary.personaname;
-
-	// attach everything else from Steam to meta, merging with existing
 	returnData.meta = {
 		...returnData.meta,
-		...playerSummaries.response.players[0],
+		...playerSummary,
 	};
+	returnData.cached_at = Date.now();
+
+	// Cache the result by original query
+	ctx.waitUntil(
+		env.PLAYERDB_CACHE.put(kvKey, JSON.stringify(returnData), {
+			expirationTtl: kvCacheTtl,
+		}),
+	);
+
+	// Also cache by Steam64 ID if different from query
+	const steam64Key = 'steam-profile-' + returnData.id;
+	if (steam64Key !== kvKey) {
+		ctx.waitUntil(
+			env.PLAYERDB_CACHE.put(steam64Key, JSON.stringify(returnData), {
+				expirationTtl: kvCacheTtl,
+			}),
+		);
+	}
+
+	return { data: returnData, request_type: playerSummaries.request_type };
+}
+
+const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
+	const env = honoCtx.env;
+	const ctx = honoCtx.executionCtx as ExecutionContext;
+
+	const query = honoCtx.get('lookupQuery') || '';
+
+	if (query === '') {
+		throw new failCode('api.404');
+	}
+
+	const { data: returnData, request_type } = await getProfile(query, env, ctx);
 
 	writeDataPoint(honoCtx, {
 		type: 'steam',
-		request_type: playerSummary.request_type,
+		request_type,
 		status: 200,
 	});
 

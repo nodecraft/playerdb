@@ -8,6 +8,7 @@ import steamLookup from './libs/steam';
 import xboxLookup from './libs/xbox';
 
 import type { Environment, HonoEnv } from './types';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 const DEBUG = false;
 
@@ -159,7 +160,12 @@ app.use('/api/*', async (ctx, next) => {
 	const lookupQuery = url.pathname.split('/').pop() || '';
 	ctx.set('lookupQuery', lookupQuery);
 
-	const response = await cache.match(ctx.req.url); // try to find match for this request in the edge cache
+	// Normalize cache key: lowercase the query for case-insensitive lookups (e.g., Minecraft usernames)
+	const normalizedUrl = new URL(url);
+	normalizedUrl.pathname = normalizedUrl.pathname.toLowerCase();
+	const cacheKey = normalizedUrl.toString();
+
+	const response = await cache.match(cacheKey); // try to find match for this request in the edge cache
 	if (process.env.NODE_ENV !== 'development' && response) {
 		// use cache found on Cloudflare edge. Set X-Worker-Cache header for helpful debug
 		const newHdrs = new Headers(response.headers);
@@ -185,24 +191,26 @@ app.use('/api/*', async (ctx, next) => {
 	// Cache the response after handler completes
 	if (ctx.res) {
 		const primaryCacheResponse = ctx.res.clone();
-		const secondaryCacheResponse = ctx.res.clone();
 		const jsonParseResponse = ctx.res.clone();
 
-		// Cache primary URL
-		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, primaryCacheResponse));
+		// Cache primary URL (using normalized cache key)
+		ctx.executionCtx.waitUntil(cache.put(cacheKey, primaryCacheResponse));
 
 		// if querying for username, store a cache for the ID of this player too
 		ctx.executionCtx.waitUntil((async () => {
 			try {
-				const url = ctx.get('url');
 				const lookupQuery = ctx.get('lookupQuery');
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const responseData = await jsonParseResponse.json<any>();
 				if (responseData?.data?.player?.id && responseData?.data?.player?.id !== lookupQuery) {
-					const newUrl = new URL(url);
-					newUrl.pathname = newUrl.pathname.slice(0, newUrl.pathname.length - lookupQuery.length) + responseData.data.player.id;
-					// Use the pre-cloned response for secondary cache
-					await cache.put(newUrl, secondaryCacheResponse);
+					const secondaryUrl = new URL(cacheKey);
+					secondaryUrl.pathname = secondaryUrl.pathname.slice(0, secondaryUrl.pathname.length - lookupQuery.toLowerCase().length) + responseData.data.player.id.toLowerCase();
+					// Reconstruct response from parsed data (avoids upfront clone)
+					const secondaryCacheResponse = new Response(JSON.stringify(responseData), {
+						status: ctx.res.status,
+						headers: ctx.res.headers,
+					});
+					await cache.put(secondaryUrl.toString(), secondaryCacheResponse);
 				}
 			} catch (err) {
 				// we tried to cache more. No problem if this doesn't work
@@ -229,17 +237,15 @@ app.onError((err, ctx) => {
 	}
 
 	// set status code appropriately
-	let status: 400 | 404 | 429 | 500 = 400;
-	// @ts-expect-error errors aren't properly typed
-	if (err?.statusCode && typeof err.statusCode === 'number') {
+	let status: ContentfulStatusCode = 400;
+	if ('statusCode' in err && err?.statusCode && typeof err.statusCode === 'number') {
 		// @ts-expect-error errors aren't properly typed
 		status = err.statusCode;
 	} else if (responseData.error) {
 		status = 500;
 	}
 	// handle `api.404` code specifically as a 404 status
-	// @ts-expect-error errors aren't properly typed
-	if (err.code === 'api.404') {
+	if ('code' in err && err.code === 'api.404') {
 		status = 404;
 	}
 
@@ -254,23 +260,19 @@ app.onError((err, ctx) => {
 
 	if (ctx.req.url.includes('/api/')) {
 		const cache = caches.default;
-		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, errorResponse.clone()));
+		// normalize cache key for consistency with middleware
+		const url = ctx.get('url');
+		const normalizedUrl = new URL(url);
+		normalizedUrl.pathname = normalizedUrl.pathname.toLowerCase();
+		ctx.executionCtx.waitUntil(cache.put(normalizedUrl.toString(), errorResponse.clone()));
 	}
 
 	return errorResponse;
 });
 
-// Not found handler (404)
-app.notFound((ctx) => {
-	const responseData = helpers.code('api.404');
-	const notFoundResponse = ctx.json(responseData, 404, apiHeader);
-
-	if (ctx.req.url.includes('/api/')) {
-		const cache = caches.default;
-		ctx.executionCtx.waitUntil(cache.put(ctx.req.url, notFoundResponse.clone()));
-	}
-
-	return notFoundResponse;
+// Not found handler (404) - throw to onError for consistent analytics and caching
+app.notFound(() => {
+	throw new helpers.failCode('api.404', { statusCode: 404 });
 });
 
 // API routes

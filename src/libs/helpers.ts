@@ -1,5 +1,7 @@
 import codes from '../error_codes/codes';
 
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
+
 const code = function(
 	code: keyof typeof codes,
 	data: Record<string, unknown> = {},
@@ -13,14 +15,14 @@ const code = function(
 
 type ErrorData = {
 	message?: string;
-	statusCode?: number;
+	statusCode?: ContentfulStatusCode;
 	[key: string]: unknown;
 };
 class failCode extends Error {
 	// eslint-disable-line unicorn/custom-error-definition
 	code: string;
 	data: Record<string, unknown>;
-	statusCode?: number;
+	statusCode?: ContentfulStatusCode;
 	constructor(codeStr: keyof typeof codes, data: ErrorData = {}) {
 		const codeData = code(codeStr, data);
 		super(codeData.message ?? codeStr);
@@ -42,7 +44,7 @@ class errorCode extends Error {
 	// eslint-disable-line unicorn/custom-error-definition
 	code: string;
 	data: Record<string, unknown>;
-	statusCode?: number;
+	statusCode?: ContentfulStatusCode;
 	constructor(codeStr: keyof typeof codes, data: ErrorData = {}) {
 		const codeData = code(codeStr, data);
 		super(codeData.message ?? codeStr);
