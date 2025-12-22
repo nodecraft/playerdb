@@ -31,14 +31,21 @@ const helpers = {
 
 		url.search = new URLSearchParams(data.qs).toString();
 		url.pathname += data.path;
-		const response = await fetch(url.href, {
-			method: 'GET',
-			cf: {
-				cacheEverything: true,
-				cacheTtl,
-			},
-			signal: AbortSignal.timeout(5000),
-		});
+		let response;
+		try {
+			response = await fetch(url.href, {
+				method: 'GET',
+				cf: {
+					cacheEverything: true,
+					cacheTtl,
+				},
+				signal: AbortSignal.timeout(5000),
+			});
+		} catch (err) {
+			// Handle timeout and network errors
+			console.error('Steam API request failed:', err);
+			throw new errorCode('steam.api_failure');
+		}
 
 		if (response.status === 429) {
 			throw new errorCode('steam.rate_limited', { statusCode: 429 });
