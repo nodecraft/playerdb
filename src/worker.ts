@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 
 import { writeDataPoint } from './libs/analytics';
 import * as helpers from './libs/helpers';
+import hytaleLookup from './libs/hytale';
 import minecraftLookup from './libs/minecraft';
 import steamLookup from './libs/steam';
 import xboxLookup from './libs/xbox';
@@ -149,7 +150,9 @@ app.use('/api/*', async (ctx, next) => {
 	const cache = caches.default; // Cloudflare edge caching
 
 	let type = 'unknown';
-	if (url.pathname.includes('/player/minecraft')) {
+	if (url.pathname.includes('/player/hytale')) {
+		type = 'hytale';
+	} else if (url.pathname.includes('/player/minecraft')) {
 		type = 'minecraft';
 	} else if (url.pathname.includes('/player/steam')) {
 		type = 'steam';
@@ -276,6 +279,7 @@ app.notFound(() => {
 });
 
 // API routes
+app.get('/api/player/hytale/:query', hytaleLookup);
 app.get('/api/player/minecraft/:query', minecraftLookup);
 app.get('/api/player/steam/:query', steamLookup);
 app.get('/api/player/xbox/:query', xboxLookup);
