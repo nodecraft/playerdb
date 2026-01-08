@@ -171,7 +171,7 @@ describe('minecraft api', () => {
 	});
 });
 
-describe('steam api', () => {
+describe.skipIf(!env.STEAM_APIKEY)('steam api', () => {
 	it('responds with expected response for vanity url', async (context) => {
 		const request = new IncomingRequest(
 			'http://localhost/api/player/steam/james_ross',
@@ -276,7 +276,7 @@ describe('steam api', () => {
 	});
 });
 
-describe('xbox api', () => {
+describe.skipIf(!env.XBOX_APIKEY)('xbox api', () => {
 	it('responds with expected response for gamertag', async (context) => {
 		const request = new IncomingRequest(
 			'http://localhost/api/player/xbox/Jimboodude',
