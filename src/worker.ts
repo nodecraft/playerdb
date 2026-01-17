@@ -302,4 +302,16 @@ export default {
 			});
 		}
 	},
+
+	// refresh Hytale token periodically to avoid expiration
+	async scheduled(event, env, ctx): Promise<void> {
+		const id = env.HYTALE_TOKEN_MANAGER.idFromName('singleton');
+		const tokenManager = env.HYTALE_TOKEN_MANAGER.get(id);
+
+		const result = await tokenManager.proactiveRefresh();
+		console.log(`Hytale token refresh cron: ${result}`);
+	},
 } satisfies ExportedHandler<Environment>;
+
+// durable object class for hytale token management
+export { HytaleTokenManager } from './libs/hytale-token-manager';
