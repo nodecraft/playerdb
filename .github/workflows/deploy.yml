@@ -34,6 +34,8 @@ jobs:
             STEAM_APIKEY3
             STEAM_APIKEY4
             NODECRAFT_API_KEY
+            HYTALE_PROFILE_UUID
+            HYTALE_REFRESH_TOKEN
         env:
           XBOX_APIKEY: ${{ secrets.XBOX_APIKEY }}
           STEAM_APIKEY: ${{ secrets.STEAM_APIKEY }}
