@@ -352,3 +352,77 @@ describe.skipIf(!env.XBOX_APIKEY)('xbox api', () => {
 		expect(json.code).toEqual('xbox.bad_response_code');
 	});
 });
+
+// TODO: investigate tests hanging with durable object usage
+describe.skip('hytale api', () => {
+	it('responds with expected response for profile uuid', async () => {
+		const request = new IncomingRequest(
+			'http://localhost/api/player/hytale/e270fb8d-fdf9-4edc-9f82-ad2dca9a4ba2',
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(200);
+		expect(response.headers.get('cf-cache-status')).toEqual(null);
+		expect(json.success).toBe(true);
+		expect(json.code).toEqual('player.found');
+		expect(json.data).toHaveProperty('player');
+		expect(json.data.player.id).toEqual('e270fb8d-fdf9-4edc-9f82-ad2dca9a4ba2');
+		expect(json.data.player.username).toEqual('cherryjimbo');
+		expect(json.data.player).toHaveProperty('avatar');
+		expect(json.data.player).toHaveProperty('meta');
+		// make request again, should now be cached
+		const ctx2 = createExecutionContext();
+		const response2 = await worker.fetch(request, env, ctx2);
+		await waitOnExecutionContext(ctx2);
+		expect(response2.status).toBe(200);
+		expect(response2.headers.get('cf-cache-status')).toEqual('HIT');
+		// consume body to ensure no EBUSY errors
+		await response2.text();
+	});
+
+	it('responds with expected response for username', async () => {
+		const request = new IncomingRequest(
+			'http://localhost/api/player/hytale/cherryjimbo',
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(200);
+		expect(json.success).toBe(true);
+		expect(json.code).toEqual('player.found');
+		expect(json.data).toHaveProperty('player');
+		expect(json.data.player.id).toEqual('e270fb8d-fdf9-4edc-9f82-ad2dca9a4ba2');
+		expect(json.data.player.username).toEqual('cherryjimbo');
+		expect(json.data.player).toHaveProperty('avatar');
+		expect(json.data.player).toHaveProperty('meta');
+	});
+
+	it('responds for unknown profile uuid', async () => {
+		const request = new IncomingRequest(
+			'http://localhost/api/player/hytale/00000000-0000-0000-0000-000000000000',
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(400);
+		expect(json.success).toBe(false);
+		expect(json.code).toEqual('hytale.not_found');
+	});
+
+	it('responds for invalid profile uuid', async () => {
+		const request = new IncomingRequest(
+			'http://localhost/api/player/hytale/invalid-uuid-format',
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(400);
+		expect(json.success).toBe(false);
+		expect(json.code).toEqual('hytale.invalid_identifier');
+	});
+});

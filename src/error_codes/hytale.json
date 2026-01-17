@@ -4,5 +4,10 @@
 	"hytale.api_failure": "Hytale API lookup failed.",
 	"hytale.api_unavailable": "Hytale API is not yet available. Please check back later.",
 	"hytale.non_json": "Hytale API returned an invalid, non JSON response.",
-	"hytale.rate_limited": "This request has been rate limited upstream. Please try again later."
+	"hytale.rate_limited": "This request has been rate limited upstream. Please try again later.",
+	"hytale.auth_failure": "Hytale API authentication failed.",
+	"hytale.no_refresh_token": "No Hytale refresh token configured.",
+	"hytale.token_refresh_failed": "Failed to refresh Hytale access token.",
+	"hytale.no_profiles": "No Hytale profiles found for this account.",
+	"hytale.session_creation_failed": "Failed to create Hytale game session."
 }

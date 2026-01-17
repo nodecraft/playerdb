@@ -14,6 +14,18 @@ analytics_engine_datasets = [
 	{ binding = "PLAYERDB_ANALYTICS" }
 ]
 
+[[durable_objects.bindings]]
+name = "HYTALE_TOKEN_MANAGER"
+class_name = "HytaleTokenManager"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["HytaleTokenManager"]
+
+# Daily cron for Hytale refresh token rotation (runs at 3:00 AM UTC)
+[triggers]
+crons = ["0 3 * * *"]
+
 [assets]
 directory = "./public"
 binding = "ASSETS"
@@ -34,6 +46,10 @@ analytics_engine_datasets = [
 	{ binding = "PLAYERDB_ANALYTICS" }
 ]
 
+[[env.staging.durable_objects.bindings]]
+name = "HYTALE_TOKEN_MANAGER"
+class_name = "HytaleTokenManager"
+
 [env.production]
 name = "playerdb"
 workers_dev = false
@@ -51,6 +67,11 @@ analytics_engine_datasets = [
 ]
 
 minify = true
+
+[[env.production.durable_objects.bindings]]
+name = "HYTALE_TOKEN_MANAGER"
+class_name = "HytaleTokenManager"
+
 
 [env.production.define]
 "process.env.NODE_ENV"="'production'"
