@@ -1,11 +1,16 @@
+// eslint-disable-next-line n/no-missing-import
+import { connect } from 'cloudflare:sockets';
+
 import { writeDataPoint } from './analytics';
 import * as helperCodes from './helpers';
 import { errorCode, failCode } from './helpers';
+import { parseResponse } from './http';
 
 import type { Environment, HonoEnv } from '../types';
 import type { HytaleTokenManager } from './hytale-token-manager';
 import type { Context } from 'hono';
 
+const ACCOUNT_DATA_HOST = 'account-data.hytale.com';
 const ACCOUNT_DATA_URL = 'https://account-data.hytale.com';
 
 const oneDay = 60 * 60 * 24;
@@ -23,6 +28,32 @@ type RequestData = {
 	url: string;
 	headers?: Record<string, string>;
 };
+
+/**
+ * Check HTTP status code and throw appropriate error
+ */
+function handleStatusCode(statusCode: number, context: string): void {
+	if (statusCode === 401 || statusCode === 403) {
+		const err = new errorCode('hytale.auth_failure', { statusCode });
+		(err as any).isAuthError = true;
+		throw err;
+	}
+
+	if (statusCode === 429) {
+		const err = new errorCode('hytale.rate_limited', { statusCode: 429 });
+		(err as any).statusCode = 429;
+		throw err;
+	}
+
+	if (statusCode === 404) {
+		throw new failCode('hytale.not_found');
+	}
+
+	if (statusCode !== 200) {
+		console.log(`[Hytale] ${context} got non-200 response:`, statusCode);
+		throw new errorCode('hytale.api_failure');
+	}
+}
 
 const helpers = {
 	async request(data: RequestData) {
@@ -47,29 +78,7 @@ const helpers = {
 			throw new errorCode('hytale.api_failure');
 		}
 
-		if (response.status === 401 || response.status === 403) {
-			const err = new errorCode('hytale.auth_failure', { statusCode: response.status });
-			(err as any).isAuthError = true;
-			throw err;
-		}
-
-		if (response.status === 429) {
-			throw new errorCode('hytale.rate_limited', { statusCode: 429 });
-		}
-
-		if (response.status === 404) {
-			throw new failCode('hytale.not_found');
-		}
-
-		if (response.status !== 200) {
-			console.log(
-				'Hytale API request failed:',
-				response.status,
-				response.statusText,
-				data.url,
-			);
-			throw new errorCode('hytale.api_failure');
-		}
+		handleStatusCode(response.status, 'HTTP request');
 
 		const contentType = response.headers.get('content-type');
 		if (!contentType || !contentType.includes('json')) {
@@ -81,13 +90,13 @@ const helpers = {
 		let body = null;
 		try {
 			body = await response.json<any>();
-		} catch {
-			// we tried
+		} catch (parseErr) {
+			console.error('[Hytale] Failed to parse HTTP response JSON:', parseErr);
+			throw new errorCode('hytale.api_failure', { message: 'Invalid JSON in API response' });
 		}
 		if (!body) {
 			throw new failCode('hytale.not_found');
 		}
-		body.request_type = 'http';
 		return body;
 	},
 
@@ -109,6 +118,116 @@ const helpers = {
 			skin,
 			meta: {},
 		};
+	},
+
+	/**
+	 * Make a raw TCP request to Hytale API (bypasses some rate limiting)
+	 */
+	async tcpRequest(path: string, sessionToken: string): Promise<any> {
+		const timeoutMs = 5000;
+		let socket: Awaited<ReturnType<typeof connect>> | null = null;
+		let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timeoutId = setTimeout(() => {
+				if (socket) {
+					try {
+						socket.close();
+					} catch {
+						// Ignore close errors
+					}
+				}
+				reject(new errorCode('hytale.api_failure', { message: 'TCP request timed out' }));
+			}, timeoutMs);
+		});
+
+		const requestPromise = (async () => {
+			socket = await connect(
+				{
+					hostname: ACCOUNT_DATA_HOST,
+					port: 443,
+				},
+				{
+					secureTransport: 'on',
+					allowHalfOpen: false,
+				},
+			);
+
+			const writer = socket.writable.getWriter();
+			const encoder = new TextEncoder();
+			const rawHTTPReq = [
+				`GET ${path} HTTP/1.1`,
+				`Host: ${ACCOUNT_DATA_HOST}`,
+				'Accept: application/json',
+				`Authorization: Bearer ${sessionToken}`,
+				'Connection: close',
+			];
+			const joined = rawHTTPReq.join('\r\n');
+			const encoded = encoder.encode(`${joined}\r\n\r\n`);
+			await writer.write(encoded);
+
+			const reader = socket.readable.getReader();
+			const chunks: Uint8Array[] = [];
+
+			// Collect all chunks
+			// eslint-disable-next-line no-constant-condition
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) {
+					break;
+				}
+				chunks.push(value);
+			}
+			socket.close();
+
+			// Calculate total length and concatenate
+			const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+			const combined = new Uint8Array(totalLength);
+			let offset = 0;
+			for (const chunk of chunks) {
+				combined.set(chunk, offset);
+				offset += chunk.length;
+			}
+
+			return new TextDecoder().decode(combined);
+		})();
+
+		let result: string;
+		try {
+			result = await Promise.race([requestPromise, timeoutPromise]);
+		} catch (err) {
+			// Pass through hytale errors (including timeout)
+			// @ts-expect-error error not properly typed
+			if (typeof err?.code === 'string' && err.code.startsWith('hytale.')) {
+				throw err;
+			}
+			console.error('[Hytale] TCP error:', err);
+			throw new errorCode('hytale.api_failure');
+		} finally {
+			if (timeoutId) {
+				clearTimeout(timeoutId);
+			}
+		}
+
+		const parsed = parseResponse(result);
+		handleStatusCode(parsed.statusCode, 'TCP request');
+
+		const contentType = parsed.headers['content-type'];
+		if (!contentType || !contentType.includes('json')) {
+			throw new errorCode('hytale.non_json', {
+				contentType: contentType ?? null,
+			});
+		}
+
+		let body = null;
+		try {
+			body = JSON.parse(parsed.bodyData);
+		} catch (parseErr) {
+			console.error('[Hytale] Failed to parse TCP response JSON:', parseErr);
+			throw new errorCode('hytale.api_failure', { message: 'Invalid JSON in API response' });
+		}
+
+		return body;
 	},
 };
 
@@ -143,38 +262,85 @@ function isUuid(query: string): boolean {
 }
 
 /**
+ * Check if error should be rethrown without fallback
+ */
+function shouldSkipHttpFallback(err: any): boolean {
+	const code = err?.code;
+	return code === 'hytale.not_found'
+		|| code === 'hytale.invalid_identifier'
+		|| err?.isAuthError;
+}
+
+/**
+ * Report rate limit errors to the token manager
+ */
+function maybeReportRateLimit(
+	err: any,
+	sessionToken: string,
+	tokenManager: DurableObjectStub<HytaleTokenManager>,
+	ctx: ExecutionContext,
+): void {
+	if (err?.statusCode === 429) {
+		ctx.waitUntil(tokenManager.reportRateLimit(sessionToken));
+	}
+}
+
+/**
  * Fetch profile from Hytale API
+ * Tries TCP first for better rate limit avoidance, falls back to regular HTTP
  */
 async function fetchProfileFromApi(
 	query: string,
 	sessionToken: string,
-): Promise<Record<string, any>> {
-	const endpoint = isUuid(query)
-		? `${ACCOUNT_DATA_URL}/profile/uuid/${encodeURIComponent(query)}`
-		: `${ACCOUNT_DATA_URL}/profile/username/${encodeURIComponent(query)}`;
+	tokenManager: DurableObjectStub<HytaleTokenManager>,
+	ctx: ExecutionContext,
+): Promise<{ data: Record<string, any>; request_type: string; }> {
+	const path = isUuid(query)
+		? `/profile/uuid/${encodeURIComponent(query)}`
+		: `/profile/username/${encodeURIComponent(query)}`;
 
-	const apiResponse = await helpers.request({
-		url: endpoint,
-		headers: {
-			Authorization: `Bearer ${sessionToken}`,
-		},
-	});
+	let apiResponse;
+	let usedTcp = false;
 
-	// Debug: log the raw API response
-	console.log('[Hytale] Raw API response:', JSON.stringify(apiResponse, null, 2));
+	try {
+		console.log('[Hytale] Trying TCP request');
+		apiResponse = await helpers.tcpRequest(path, sessionToken);
+		usedTcp = true;
+	} catch (tcpErr: any) {
+		if (shouldSkipHttpFallback(tcpErr)) {
+			maybeReportRateLimit(tcpErr, sessionToken, tokenManager, ctx);
+			throw tcpErr;
+		}
 
-	const returnData = helpers.parse(apiResponse);
-	returnData.meta ??= {};
-	returnData.meta.cached_at = Math.round(Date.now() / 1000);
+		console.log('[Hytale] TCP failed, falling back to HTTP:', tcpErr?.message || tcpErr);
 
-	return returnData;
+		try {
+			apiResponse = await helpers.request({
+				url: `${ACCOUNT_DATA_URL}${path}`,
+				headers: {
+					Authorization: `Bearer ${sessionToken}`,
+				},
+			});
+		} catch (httpErr: any) {
+			maybeReportRateLimit(httpErr, sessionToken, tokenManager, ctx);
+			throw httpErr;
+		}
+	}
+
+	console.log('[Hytale] Raw API response (%s):', usedTcp ? 'TCP' : 'HTTP', JSON.stringify(apiResponse, null, 2));
+
+	const data = helpers.parse(apiResponse);
+	data.meta ??= {};
+	data.meta.cached_at = Math.round(Date.now() / 1000);
+
+	return { data, request_type: usedTcp ? 'tcp' : 'http' };
 }
 
 async function getProfile(
 	query: string,
 	env: Environment,
 	ctx: ExecutionContext,
-): Promise<{ data: Record<string, any>; fromCache: boolean; }> {
+): Promise<{ data: Record<string, any>; request_type: string; }> {
 	const kvKey = 'hytale-profile-' + query.toLowerCase();
 	console.log('[Hytale] Looking up profile:', query);
 
@@ -186,7 +352,7 @@ async function getProfile(
 			});
 			if (cached) {
 				console.log('[Hytale] Profile found in KV cache');
-				return { data: cached as Record<string, any>, fromCache: true };
+				return { data: cached as Record<string, any>, request_type: 'kv_cache' };
 			}
 		}
 	} catch {
@@ -203,17 +369,22 @@ async function getProfile(
 	let returnData: Record<string, any>;
 
 	// First attempt with cached token
+	let request_type: string;
 	try {
 		console.log('[Hytale] Fetching profile from API');
 		const sessionToken = await tokenManager.getSessionToken();
-		returnData = await fetchProfileFromApi(query, sessionToken);
+		const result = await fetchProfileFromApi(query, sessionToken, tokenManager, ctx);
+		returnData = result.data;
+		request_type = result.request_type;
 	} catch (err: any) {
 		// If auth error, invalidate tokens and retry with fresh ones
 		if (err?.isAuthError) {
 			console.log('[Hytale] Auth error, invalidating tokens and retrying');
 			await tokenManager.invalidateTokens();
 			const freshToken = await tokenManager.getSessionToken(true);
-			returnData = await fetchProfileFromApi(query, freshToken);
+			const result = await fetchProfileFromApi(query, freshToken, tokenManager, ctx);
+			returnData = result.data;
+			request_type = result.request_type;
 		} else {
 			throw err;
 		}
@@ -252,7 +423,7 @@ async function getProfile(
 		}
 	}
 
-	return { data: returnData, fromCache: false };
+	return { data: returnData, request_type };
 }
 
 const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
@@ -265,11 +436,11 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 		throw new failCode('api.404');
 	}
 
-	const { data: returnData, fromCache } = await getProfile(query, env, ctx);
+	const { data: returnData, request_type } = await getProfile(query, env, ctx);
 
 	writeDataPoint(honoCtx, {
 		type: 'hytale',
-		request_type: fromCache ? 'kv_cache' : 'http',
+		request_type,
 		status: 200,
 	});
 
