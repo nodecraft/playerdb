@@ -9,5 +9,6 @@
 	"hytale.no_refresh_token": "No Hytale refresh token configured.",
 	"hytale.token_refresh_failed": "Failed to refresh Hytale access token.",
 	"hytale.no_profiles": "No Hytale profiles found for this account.",
-	"hytale.session_creation_failed": "Failed to create Hytale game session."
+	"hytale.session_creation_failed": "Failed to create Hytale game session.",
+	"hytale.no_sessions": "No valid Hytale sessions available. Please try again later."
 }

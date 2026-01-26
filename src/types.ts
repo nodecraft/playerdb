@@ -14,6 +14,8 @@ export interface Environment {
 	NODECRAFT_API_KEY?: string;
 	HYTALE_REFRESH_TOKEN?: string;
 	HYTALE_PROFILE_UUID?: string;
+	HYTALE_SESSION_POOL_MIN?: string;
+	HYTALE_SESSION_POOL_MAX?: string;
 	BYPASS_CACHE?: string;
 }
 
