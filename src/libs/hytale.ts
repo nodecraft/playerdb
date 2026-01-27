@@ -314,6 +314,24 @@ async function getProfile(
 			const result = await fetchProfileFromApi(query, freshToken, env, tokenManager, ctx);
 			returnData = result.data;
 			request_type = result.request_type;
+		} else if (err?.code === 'hytale.rate_limited') {
+			// All sessions are rate-limited from worker's IP, try container fallback
+			// Rate limiting is IP-based, so container (different IP) might work
+			console.log('[Hytale] All sessions rate-limited, trying container fallback');
+			const containerToken = await tokenManager.getSessionTokenForContainer();
+			const path = isUuid(query)
+				? `/profile/uuid/${encodeURIComponent(query)}`
+				: `/profile/username/${encodeURIComponent(query)}`;
+			const url = `${ACCOUNT_DATA_URL}${path}`;
+			const headers = { Authorization: `Bearer ${containerToken}` };
+
+			const apiResponse = await helpers.containerRequest(env, { url, headers });
+			console.log('[Hytale] Container fallback response:', JSON.stringify(apiResponse, null, 2));
+
+			returnData = helpers.parse(apiResponse);
+			returnData.meta ??= {};
+			returnData.meta.cached_at = Math.round(Date.now() / 1000);
+			request_type = 'container_fallback';
 		} else {
 			throw err;
 		}

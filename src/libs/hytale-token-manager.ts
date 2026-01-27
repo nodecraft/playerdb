@@ -878,6 +878,31 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 	}
 
 	/**
+	 * Get any valid (non-expired) session token for container fallback
+	 * Ignores rate-limit status since rate limiting is IP-based and
+	 * the container uses different IPs
+	 */
+	async getSessionTokenForContainer(): Promise<string> {
+		console.log('[Hytale] getSessionTokenForContainer called');
+
+		const tokens = await this.loadTokens();
+
+		if (!tokens.sessions || tokens.sessions.length === 0) {
+			throw new errorCode('hytale.no_sessions');
+		}
+
+		// Find any valid (non-expired) session, ignoring rate-limit status
+		for (const session of tokens.sessions) {
+			if (this.isSessionInfoValid(session)) {
+				console.log('[Hytale] Found valid session for container fallback');
+				return session.sessionToken;
+			}
+		}
+
+		throw new errorCode('hytale.no_sessions');
+	}
+
+	/**
 	 * Proactive refresh token rotation
 	 * Called by scheduled handler to ensure refresh token doesn't expire
 	 * Refresh tokens have 30-day TTL, we rotate if expiring within 7 days
