@@ -1,16 +1,11 @@
-// eslint-disable-next-line n/no-missing-import
-import { connect } from 'cloudflare:sockets';
-
 import { writeDataPoint } from './analytics';
 import * as helperCodes from './helpers';
 import { errorCode, failCode } from './helpers';
-import { parseResponse } from './http';
 
 import type { Environment, HonoEnv } from '../types';
 import type { HytaleTokenManager } from './hytale-token-manager';
 import type { Context } from 'hono';
 
-const ACCOUNT_DATA_HOST = 'account-data.hytale.com';
 const ACCOUNT_DATA_URL = 'https://account-data.hytale.com';
 
 const oneDay = 60 * 60 * 24;
@@ -121,98 +116,28 @@ const helpers = {
 	},
 
 	/**
-	 * Make a raw TCP request to Hytale API (bypasses some rate limiting)
+	 * Make a request via the container proxy (bypasses IP-based rate limiting)
 	 */
-	async tcpRequest(path: string, sessionToken: string): Promise<any> {
-		const timeoutMs = 5000;
-		let socket: Awaited<ReturnType<typeof connect>> | null = null;
-		let timeoutId: ReturnType<typeof setTimeout> | null = null;
+	async containerRequest(env: Environment, data: RequestData): Promise<any> {
+		const { getRandom } = await import('@cloudflare/containers');
+		const container = await getRandom(env.HYTALE_PROXY, 3); // Pick from up to 3 instances
 
-		const timeoutPromise = new Promise<never>((_, reject) => {
-			timeoutId = setTimeout(() => {
-				if (socket) {
-					try {
-						socket.close();
-					} catch {
-						// Ignore close errors
-					}
-				}
-				reject(new errorCode('hytale.api_failure', { message: 'TCP request timed out' }));
-			}, timeoutMs);
-		});
-
-		const requestPromise = (async () => {
-			socket = await connect(
-				{
-					hostname: ACCOUNT_DATA_HOST,
-					port: 443,
-				},
-				{
-					secureTransport: 'on',
-					allowHalfOpen: false,
-				},
-			);
-
-			const writer = socket.writable.getWriter();
-			const encoder = new TextEncoder();
-			const rawHTTPReq = [
-				`GET ${path} HTTP/1.1`,
-				`Host: ${ACCOUNT_DATA_HOST}`,
-				'Accept: application/json',
-				`Authorization: Bearer ${sessionToken}`,
-				'Connection: close',
-			];
-			const joined = rawHTTPReq.join('\r\n');
-			const encoded = encoder.encode(`${joined}\r\n\r\n`);
-			await writer.write(encoded);
-
-			const reader = socket.readable.getReader();
-			const chunks: Uint8Array[] = [];
-
-			// Collect all chunks
-			// eslint-disable-next-line no-constant-condition
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					break;
-				}
-				chunks.push(value);
-			}
-			socket.close();
-
-			// Calculate total length and concatenate
-			const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-			const combined = new Uint8Array(totalLength);
-			let offset = 0;
-			for (const chunk of chunks) {
-				combined.set(chunk, offset);
-				offset += chunk.length;
-			}
-
-			return new TextDecoder().decode(combined);
-		})();
-
-		let result: string;
+		let response;
 		try {
-			result = await Promise.race([requestPromise, timeoutPromise]);
+			response = await container.fetch(new Request('http://container/proxy', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ url: data.url, headers: data.headers }),
+				signal: AbortSignal.timeout(10000),
+			}));
 		} catch (err) {
-			// Pass through hytale errors (including timeout)
-			// @ts-expect-error error not properly typed
-			if (typeof err?.code === 'string' && err.code.startsWith('hytale.')) {
-				throw err;
-			}
-			console.error('[Hytale] TCP error:', err);
+			console.error('[Hytale] Container request failed:', err);
 			throw new errorCode('hytale.api_failure');
-		} finally {
-			if (timeoutId) {
-				clearTimeout(timeoutId);
-			}
 		}
 
-		const parsed = parseResponse(result);
-		handleStatusCode(parsed.statusCode, 'TCP request');
+		handleStatusCode(response.status, 'Container proxy');
 
-		const contentType = parsed.headers['content-type'];
+		const contentType = response.headers.get('content-type');
 		if (!contentType || !contentType.includes('json')) {
 			throw new errorCode('hytale.non_json', {
 				contentType: contentType ?? null,
@@ -221,12 +146,14 @@ const helpers = {
 
 		let body = null;
 		try {
-			body = JSON.parse(parsed.bodyData);
+			body = await response.json<any>();
 		} catch (parseErr) {
-			console.error('[Hytale] Failed to parse TCP response JSON:', parseErr);
+			console.error('[Hytale] Failed to parse container response JSON:', parseErr);
 			throw new errorCode('hytale.api_failure', { message: 'Invalid JSON in API response' });
 		}
-
+		if (!body) {
+			throw new failCode('hytale.not_found');
+		}
 		return body;
 	},
 };
@@ -262,9 +189,9 @@ function isUuid(query: string): boolean {
 }
 
 /**
- * Check if error should be rethrown without fallback
+ * Check if error should be rethrown without container fallback
  */
-function shouldSkipHttpFallback(err: any): boolean {
+function shouldSkipContainerFallback(err: any): boolean {
 	const code = err?.code;
 	return code === 'hytale.not_found'
 		|| code === 'hytale.invalid_identifier'
@@ -287,11 +214,12 @@ function maybeReportRateLimit(
 
 /**
  * Fetch profile from Hytale API
- * Tries TCP first for better rate limit avoidance, falls back to regular HTTP
+ * Tries HTTP first, falls back to container proxy for rate limit bypass
  */
 async function fetchProfileFromApi(
 	query: string,
 	sessionToken: string,
+	env: Environment,
 	tokenManager: DurableObjectStub<HytaleTokenManager>,
 	ctx: ExecutionContext,
 ): Promise<{ data: Record<string, any>; request_type: string; }> {
@@ -299,41 +227,42 @@ async function fetchProfileFromApi(
 		? `/profile/uuid/${encodeURIComponent(query)}`
 		: `/profile/username/${encodeURIComponent(query)}`;
 
+	const url = `${ACCOUNT_DATA_URL}${path}`;
+	const headers = { Authorization: `Bearer ${sessionToken}` };
+
 	let apiResponse;
-	let usedTcp = false;
+	let requestType = 'http';
 
+	// 1. Try direct HTTP first
 	try {
-		console.log('[Hytale] Trying TCP request');
-		apiResponse = await helpers.tcpRequest(path, sessionToken);
-		usedTcp = true;
-	} catch (tcpErr: any) {
-		if (shouldSkipHttpFallback(tcpErr)) {
-			maybeReportRateLimit(tcpErr, sessionToken, tokenManager, ctx);
-			throw tcpErr;
-		}
-
-		console.log('[Hytale] TCP failed, falling back to HTTP:', tcpErr?.message || tcpErr);
-
-		try {
-			apiResponse = await helpers.request({
-				url: `${ACCOUNT_DATA_URL}${path}`,
-				headers: {
-					Authorization: `Bearer ${sessionToken}`,
-				},
-			});
-		} catch (httpErr: any) {
+		console.log('[Hytale] Trying HTTP request');
+		apiResponse = await helpers.request({ url, headers });
+	} catch (httpErr: any) {
+		// Don't retry auth errors, not found, or invalid identifier
+		if (shouldSkipContainerFallback(httpErr)) {
 			maybeReportRateLimit(httpErr, sessionToken, tokenManager, ctx);
 			throw httpErr;
 		}
+
+		console.log('[Hytale] HTTP failed, trying container proxy:', httpErr?.message || httpErr);
+
+		// 2. Fall back to container proxy
+		try {
+			apiResponse = await helpers.containerRequest(env, { url, headers });
+			requestType = 'container';
+		} catch (containerErr: any) {
+			maybeReportRateLimit(containerErr, sessionToken, tokenManager, ctx);
+			throw containerErr;
+		}
 	}
 
-	console.log('[Hytale] Raw API response (%s):', usedTcp ? 'TCP' : 'HTTP', JSON.stringify(apiResponse, null, 2));
+	console.log('[Hytale] Raw API response (%s):', requestType, JSON.stringify(apiResponse, null, 2));
 
 	const data = helpers.parse(apiResponse);
 	data.meta ??= {};
 	data.meta.cached_at = Math.round(Date.now() / 1000);
 
-	return { data, request_type: usedTcp ? 'tcp' : 'http' };
+	return { data, request_type: requestType };
 }
 
 async function getProfile(
@@ -373,7 +302,7 @@ async function getProfile(
 	try {
 		console.log('[Hytale] Fetching profile from API');
 		const sessionToken = await tokenManager.getSessionToken();
-		const result = await fetchProfileFromApi(query, sessionToken, tokenManager, ctx);
+		const result = await fetchProfileFromApi(query, sessionToken, env, tokenManager, ctx);
 		returnData = result.data;
 		request_type = result.request_type;
 	} catch (err: any) {
@@ -382,7 +311,7 @@ async function getProfile(
 			console.log('[Hytale] Auth error, invalidating tokens and retrying');
 			await tokenManager.invalidateTokens();
 			const freshToken = await tokenManager.getSessionToken(true);
-			const result = await fetchProfileFromApi(query, freshToken, tokenManager, ctx);
+			const result = await fetchProfileFromApi(query, freshToken, env, tokenManager, ctx);
 			returnData = result.data;
 			request_type = result.request_type;
 		} else {

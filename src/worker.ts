@@ -315,3 +315,6 @@ export default {
 
 // durable object class for hytale token management
 export { HytaleTokenManager } from './libs/hytale-token-manager';
+
+// container DO class for hytale proxy
+export { HytaleProxyContainer } from './libs/hytale-proxy-container';
