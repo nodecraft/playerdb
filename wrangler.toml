@@ -25,8 +25,8 @@ class_name = "HytaleProxyContainer"
 [[containers]]
 class_name = "HytaleProxyContainer"
 image = "./container/Dockerfile"
-instance_type = "lite"
-max_instances = 3
+instance_type = "basic"
+max_instances = 10
 
 [[migrations]]
 tag = "v1"
@@ -71,8 +71,8 @@ class_name = "HytaleProxyContainer"
 [[env.staging.containers]]
 class_name = "HytaleProxyContainer"
 image = "./container/Dockerfile"
-instance_type = "lite"
-max_instances = 3
+instance_type = "basic"
+max_instances = 10
 
 [env.production]
 name = "playerdb"
@@ -103,8 +103,8 @@ class_name = "HytaleProxyContainer"
 [[env.production.containers]]
 class_name = "HytaleProxyContainer"
 image = "./container/Dockerfile"
-instance_type = "lite"
-max_instances = 3
+instance_type = "basic"
+max_instances = 10
 
 [env.production.define]
 "process.env.NODE_ENV"="'production'"
