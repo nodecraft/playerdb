@@ -1,3 +1,4 @@
+import type { HytaleProxyContainer } from './libs/hytale-proxy-container';
 import type { HytaleTokenManager } from './libs/hytale-token-manager';
 
 export interface Environment {
@@ -5,6 +6,7 @@ export interface Environment {
 	PLAYERDB_CACHE: KVNamespace;
 	PLAYERDB_ANALYTICS?: AnalyticsEngineDataset;
 	HYTALE_TOKEN_MANAGER: DurableObjectNamespace<HytaleTokenManager>;
+	HYTALE_PROXY: DurableObjectNamespace<HytaleProxyContainer>;
 
 	XBOX_APIKEY: string;
 	STEAM_APIKEY: string;

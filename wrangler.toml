@@ -18,9 +18,23 @@ analytics_engine_datasets = [
 name = "HYTALE_TOKEN_MANAGER"
 class_name = "HytaleTokenManager"
 
+[[durable_objects.bindings]]
+name = "HYTALE_PROXY"
+class_name = "HytaleProxyContainer"
+
+[[containers]]
+class_name = "HytaleProxyContainer"
+image = "./container/Dockerfile"
+instance_type = "lite"
+max_instances = 3
+
 [[migrations]]
 tag = "v1"
 new_classes = ["HytaleTokenManager"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["HytaleProxyContainer"]
 
 # Daily cron for Hytale refresh token rotation (runs at 3:00 AM UTC)
 [triggers]
@@ -50,6 +64,16 @@ analytics_engine_datasets = [
 name = "HYTALE_TOKEN_MANAGER"
 class_name = "HytaleTokenManager"
 
+[[env.staging.durable_objects.bindings]]
+name = "HYTALE_PROXY"
+class_name = "HytaleProxyContainer"
+
+[[env.staging.containers]]
+class_name = "HytaleProxyContainer"
+image = "./container/Dockerfile"
+instance_type = "lite"
+max_instances = 3
+
 [env.production]
 name = "playerdb"
 workers_dev = false
@@ -72,6 +96,15 @@ minify = true
 name = "HYTALE_TOKEN_MANAGER"
 class_name = "HytaleTokenManager"
 
+[[env.production.durable_objects.bindings]]
+name = "HYTALE_PROXY"
+class_name = "HytaleProxyContainer"
+
+[[env.production.containers]]
+class_name = "HytaleProxyContainer"
+image = "./container/Dockerfile"
+instance_type = "lite"
+max_instances = 3
 
 [env.production.define]
 "process.env.NODE_ENV"="'production'"
