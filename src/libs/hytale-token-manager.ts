@@ -163,7 +163,7 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 	 * Get the maximum pool size from env or default
 	 */
 	private getMaxPoolSize(): number {
-		return this.parsePoolSize(this.env.HYTALE_SESSION_POOL_MAX, 5);
+		return this.parsePoolSize(this.env.HYTALE_SESSION_POOL_MAX, 10);
 	}
 
 	/**
@@ -878,9 +878,9 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 	}
 
 	/**
-	 * Get any valid (non-expired) session token for container fallback
-	 * Ignores rate-limit status since rate limiting is IP-based and
-	 * the container uses different IPs
+	 * Get a valid (non-expired) session token for container fallback
+	 * Prefers sessions not marked as rate-limited (in case there's token-level limiting too)
+	 * Falls back to rate-limited sessions sorted by oldest rate-limit time
 	 */
 	async getSessionTokenForContainer(): Promise<string> {
 		console.log('[Hytale] getSessionTokenForContainer called');
@@ -891,15 +891,25 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 			throw new errorCode('hytale.no_sessions');
 		}
 
-		// Find any valid (non-expired) session, ignoring rate-limit status
-		for (const session of tokens.sessions) {
-			if (this.isSessionInfoValid(session)) {
-				console.log('[Hytale] Found valid session for container fallback');
-				return session.sessionToken;
-			}
+		const now = Date.now();
+		const validSessions = tokens.sessions.filter(session => this.isSessionInfoValid(session));
+
+		if (validSessions.length === 0) {
+			throw new errorCode('hytale.no_sessions');
 		}
 
-		throw new errorCode('hytale.no_sessions');
+		// Prefer sessions that aren't currently marked as rate-limited
+		const notRateLimited = validSessions.filter(session => !session.rateLimitedUntil || session.rateLimitedUntil <= now);
+		if (notRateLimited.length > 0) {
+			console.log('[Hytale] Found non-rate-limited session for container fallback');
+			return notRateLimited[0].sessionToken;
+		}
+
+		// All sessions are rate-limited, pick the one whose rate-limit was set longest ago
+		// (most time for any token-level rate limit to have cleared)
+		const sorted = validSessions.sort((sessionA, sessionB) => (sessionA.rateLimitedUntil ?? 0) - (sessionB.rateLimitedUntil ?? 0));
+		console.log('[Hytale] All sessions rate-limited, using oldest for container fallback');
+		return sorted[0].sessionToken;
 	}
 
 	/**

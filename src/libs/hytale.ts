@@ -314,7 +314,7 @@ async function getProfile(
 			const result = await fetchProfileFromApi(query, freshToken, env, tokenManager, ctx);
 			returnData = result.data;
 			request_type = result.request_type;
-		} else if (err?.code === 'hytale.rate_limited') {
+		} else if (err?.code === 'hytale.rate_limited' || err?.message?.includes('rate limited')) {
 			// All sessions are rate-limited from worker's IP, try container fallback
 			// Rate limiting is IP-based, so container (different IP) might work
 			console.log('[Hytale] All sessions rate-limited, trying container fallback');
