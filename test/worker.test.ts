@@ -52,8 +52,14 @@ describe('minecraft api', () => {
 			'https://crafthead.net/avatar/ef6134805b6244e4a4467fbe85d65513',
 		);
 		expect(json.data.player.skin_texture).toEqual(
-			'http://textures.minecraft.net/texture/9d2e80355eed693e3f0485893ef04ff6a507f3aab33f2bedb48cef56e30f67d0',
+			'https://textures.minecraft.net/texture/9d2e80355eed693e3f0485893ef04ff6a507f3aab33f2bedb48cef56e30f67d0',
 		);
+
+		// cape_texture is only present if the player has a cape
+		if (json.data.player.cape_texture !== undefined) {
+			expect(json.data.player.cape_texture).toEqual(expect.any(String));
+			expect(json.data.player.cape_texture).toMatch(/^https:\/\/textures\.minecraft\.net/);
+		}
 
 		expect(json.data.player.properties).toEqual(
 			expect.arrayContaining([
@@ -95,8 +101,14 @@ describe('minecraft api', () => {
 			'https://crafthead.net/avatar/ef6134805b6244e4a4467fbe85d65513',
 		);
 		expect(json.data.player.skin_texture).toEqual(
-			'http://textures.minecraft.net/texture/9d2e80355eed693e3f0485893ef04ff6a507f3aab33f2bedb48cef56e30f67d0',
+			'https://textures.minecraft.net/texture/9d2e80355eed693e3f0485893ef04ff6a507f3aab33f2bedb48cef56e30f67d0',
 		);
+
+		// cape_texture is only present if the player has a cape
+		if (json.data.player.cape_texture !== undefined) {
+			expect(json.data.player.cape_texture).toEqual(expect.any(String));
+			expect(json.data.player.cape_texture).toMatch(/^https:\/\/textures\.minecraft\.net/);
+		}
 
 		expect(json.data.player.properties).toEqual(
 			expect.arrayContaining([
@@ -129,8 +141,14 @@ describe('minecraft api', () => {
 			'https://crafthead.net/avatar/ef6134805b6244e4a4467fbe85d65513',
 		);
 		expect(json.data.player.skin_texture).toEqual(
-			'http://textures.minecraft.net/texture/9d2e80355eed693e3f0485893ef04ff6a507f3aab33f2bedb48cef56e30f67d0',
+			'https://textures.minecraft.net/texture/9d2e80355eed693e3f0485893ef04ff6a507f3aab33f2bedb48cef56e30f67d0',
 		);
+
+		// cape_texture is only present if the player has a cape
+		if (json.data.player.cape_texture !== undefined) {
+			expect(json.data.player.cape_texture).toEqual(expect.any(String));
+			expect(json.data.player.cape_texture).toMatch(/^https:\/\/textures\.minecraft\.net/);
+		}
 
 		expect(json.data.player.properties).toEqual(
 			expect.arrayContaining([
@@ -168,6 +186,26 @@ describe('minecraft api', () => {
 		expect(response.status).toBe(400);
 		expect(json.success).toBe(false);
 		expect(json.code).toEqual('minecraft.invalid_username');
+	});
+
+	it('responds with cape_texture for player with cape', async () => {
+		// Dinnerbone is a Mojang developer who has a Mojang cape
+		const request = new IncomingRequest(
+			'http://localhost/api/player/minecraft/Dinnerbone',
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(200);
+		expect(json.success).toBe(true);
+		expect(json.code).toEqual('player.found');
+		expect(json.data).toHaveProperty('player');
+		expect(json.data.player.username).toEqual('Dinnerbone');
+		expect(json.data.player).toHaveProperty('skin_texture');
+		expect(json.data.player).toHaveProperty('cape_texture');
+		expect(json.data.player.cape_texture).toEqual(expect.any(String));
+		expect(json.data.player.cape_texture).toMatch(/^https:\/\/textures\.minecraft\.net/);
 	});
 });
 
