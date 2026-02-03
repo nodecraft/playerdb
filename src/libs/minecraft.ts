@@ -484,7 +484,10 @@ const lookup = async function lookup(
 			if (prop.name === 'textures') {
 				const textures = JSON.parse(atob(prop.value));
 				if (textures.textures && textures.textures.SKIN) {
-					returnData.skin_texture = textures.textures.SKIN.url;
+					returnData.skin_texture = textures.textures.SKIN?.url?.replace?.('http://', 'https://');
+				}
+				if (textures.textures && textures.textures.CAPE) {
+					returnData.cape_texture = textures.textures.CAPE?.url?.replace?.('http://', 'https://');
 				}
 				break; // Found textures property, no need to continue
 			}
