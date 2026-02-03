@@ -122,16 +122,19 @@ const helpers = {
 			player.username = player.meta.realName;
 		}
 
-		// set avatar
-		player.avatar = `https://avatar-ssl.xboxlive.com/avatar/${player.username}/avatarpic-l.png`;
+		// ensure an avatar is defined
+		if (!player.avatar) {
+			player.avatar = `https://avatar-ssl.xboxlive.com/avatar/${player.username}/avatarpic-l.png`;
+		}
 
 		return player;
 	},
 	map: {
 		Gamertag: 'username',
+		GameDisplayPicRaw: 'avatar',
 	},
 	// Skip fields we don't need to process
-	skipFields: new Set(['GameDisplayPicRaw']),
+	skipFields: new Set<string>([]),
 };
 
 async function getProfile(
