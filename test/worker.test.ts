@@ -335,7 +335,8 @@ describe.skipIf(!env.XBOX_APIKEY)('xbox api', () => {
 		expect(json.data).toHaveProperty('player');
 		expect(json.data.player.id).toEqual('2533274818672320');
 		expect(json.data.player.username).toEqual('Jimboodude');
-		expect(json.data.player).toHaveProperty('avatar');
+		expect(json.data.player.avatar).toMatch(/^https?:\/\//);
+		expect(json.data.player.avatar).not.toContain('mode=Padding');
 		expect(json.data.player).toHaveProperty('meta');
 
 		// make request again, should now be cached
@@ -388,6 +389,25 @@ describe.skipIf(!env.XBOX_APIKEY)('xbox api', () => {
 		expect(response.status).toBe(500);
 		expect(json.success).toBe(false);
 		expect(json.code).toEqual('xbox.bad_response_code');
+	});
+
+	it('responds for unknown gamertag', async (context) => {
+		const request = new IncomingRequest(
+			'http://localhost/api/player/xbox/thisuserdoesnotexist99999',
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		if (response.status === 429 || json?.data?.status === 429) {
+			// ignore tests if rate limited for now
+			context.skip();
+			return;
+		}
+		expect(json.success).toBe(false);
+		// API may return not_found (400) or bad_response_code (500) depending on xbl.io behavior
+		expect([400, 500]).toContain(response.status);
+		expect(['xbox.not_found', 'xbox.bad_response_code']).toContain(json.code);
 	});
 });
 
