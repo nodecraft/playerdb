@@ -15,6 +15,8 @@ const apiVersion = '/api/v2/';
 const oneDay = 60 * 60 * 24;
 const kvCacheTtl = oneDay * 7; // 7 days for KV
 const cacheTtl = oneDay * 5; // 5 days for edge/response
+const notFoundTtl = 60 * 60; // 1 hour for negative cache
+const notFoundSentinel = { __not_found: true };
 
 const responseHeaders = {
 	'content-type': 'application/json; charset=utf-8',
@@ -55,6 +57,10 @@ const helpers = {
 			// Handle timeout and network errors
 			console.error('Xbox API request failed:', err);
 			throw new errorCode('xbox.api_failure');
+		}
+
+		if (response.status === 429) {
+			throw new errorCode('xbox.rate_limited', { statusCode: 429 });
 		}
 
 		if (response.status !== 200) {
@@ -117,21 +123,36 @@ const helpers = {
 			}
 		}
 
-		// ensure a username is defined
-		if (!player.username && player.meta.realName) {
-			player.username = player.meta.realName;
+		// ensure a username is defined: Gamertag → UniqueModernGamertag → ModernGamertag → RealName
+		if (!player.username) {
+			player.username = player.uniqueModernGamertag || player.modernGamertag || player.meta.realName;
 		}
 
-		// set avatar
-		player.avatar = `https://avatar-ssl.xboxlive.com/avatar/${player.username}/avatarpic-l.png`;
+		// fix GameDisplayPicRaw: remove mode=Padding which causes 400 errors, and request a larger size
+		if (player.avatar && player.avatar.includes('images-eds-ssl.xboxlive.com')) {
+			const avatarUrl = new URL(player.avatar);
+			avatarUrl.searchParams.delete('mode');
+			avatarUrl.searchParams.set('h', '180');
+			avatarUrl.searchParams.set('w', '180');
+			player.avatar = avatarUrl.toString();
+		}
+
+		// fallback if GameDisplayPicRaw was not present
+		if (!player.avatar) {
+			player.avatar = `https://avatar-ssl.xboxlive.com/avatar/${player.username}/avatarpic-l.png`;
+		}
 
 		return player;
 	},
 	map: {
 		Gamertag: 'username',
+		GameDisplayPicRaw: 'avatar',
+		UniqueModernGamertag: 'uniqueModernGamertag',
+		ModernGamertag: 'modernGamertag',
+		ModernGamertagSuffix: 'modernGamertagSuffix',
 	},
 	// Skip fields we don't need to process
-	skipFields: new Set(['GameDisplayPicRaw']),
+	skipFields: new Set<string>(),
 };
 
 async function getProfile(
@@ -150,37 +171,55 @@ async function getProfile(
 				cacheTtl: oneDay,
 			});
 			if (cached) {
+				if ((cached as Record<string, unknown>).__not_found) {
+					throw new failCode('xbox.not_found');
+				}
 				return { data: cached as Record<string, unknown>, request_type: 'kv_cache' };
 			}
 		}
-	} catch {
+	} catch (err) {
+		if (err instanceof failCode) {
+			throw err;
+		}
 		// KV lookup failed, continue with API
 	}
 
-	const isNumber = !Number.isNaN(Number.parseInt(query));
+	const isXuid = /^\d{1,16}$/.test(query);
 	let returnData: Record<string, unknown> = {};
 	let data;
 
-	if (isNumber) {
-		// lookup by ID
-		returnData.id = query;
-		data = await helpers.request({
-			path: `account/${query}`,
-			headers: {
-				'X-Authorization': env.XBOX_APIKEY,
-			},
-		});
-	} else {
-		// lookup by username
-		data = await helpers.request({
-			path: 'friends/search',
-			qs: {
-				gt: query,
-			},
-			headers: {
-				'X-Authorization': env.XBOX_APIKEY,
-			},
-		});
+	try {
+		if (isXuid) {
+			// lookup by ID
+			returnData.id = query;
+			data = await helpers.request({
+				path: `account/${query}`,
+				headers: {
+					'X-Authorization': env.XBOX_APIKEY,
+				},
+			});
+		} else {
+			// lookup by username
+			data = await helpers.request({
+				path: 'friends/search',
+				qs: {
+					gt: query,
+				},
+				headers: {
+					'X-Authorization': env.XBOX_APIKEY,
+				},
+			});
+		}
+	} catch (err) {
+		if (err instanceof failCode && err.code === 'xbox.not_found') {
+			// negative cache not-found results to avoid burning rate limit
+			ctx.waitUntil(
+				env.PLAYERDB_CACHE.put(kvKey, JSON.stringify(notFoundSentinel), {
+					expirationTtl: notFoundTtl,
+				}),
+			);
+		}
+		throw err;
 	}
 
 	// Parse the response data
