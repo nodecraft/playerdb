@@ -200,7 +200,7 @@ const helpers = {
 	 */
 	async containerRequest(env: Environment, data: RequestData): Promise<any> {
 		const { getRandom } = await import('@cloudflare/containers');
-		const container = await getRandom(env.HYTALE_PROXY, 3); // Pick from up to 3 instances
+		const container = await getRandom(env.HYTALE_PROXY, 20); // Pick from up to 20 instances
 
 		let response;
 		try {
