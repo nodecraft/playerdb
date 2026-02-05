@@ -88,6 +88,11 @@ const helpers = {
 			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
 		}
 
+		if (response.status === 400 && body?.error === 'CONSTRAINT_VIOLATION') {
+			// mojang returns 400 with this body if the username is invalid (eg too long)
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
+
 		if (response.status !== 200) {
 			// other API failure
 			console.log('got non-200 response from nodecraft api', response.status, body);
@@ -221,6 +226,11 @@ const helpers = {
 			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
 		}
 
+		if (parsed.statusCode === 400 && body?.error === 'CONSTRAINT_VIOLATION') {
+			// mojang returns 400 with this body if the username is invalid (eg too long)
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
+
 		if (parsed.statusCode !== 200) {
 			// other API failure
 			console.log(
@@ -298,6 +308,11 @@ const helpers = {
 
 		if (response.status === 204 && !body) {
 			// bad username
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
+
+		if (response.status === 400 && body?.error === 'CONSTRAINT_VIOLATION') {
+			// mojang returns 400 with this body if the username is invalid (eg too long)
 			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
 		}
 
@@ -471,6 +486,10 @@ const lookup = async function lookup(
 	if (username.length === 32 || username.length === 36) {
 		profile = await mojangLib.profile(username, env, ctx);
 	} else {
+		// max 25 characters for a username
+		if (username.length > 25) {
+			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+		}
 		profile = await mojangLib.username(username, null, env, ctx);
 	}
 	returnData.username = profile.name;
