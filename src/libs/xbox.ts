@@ -63,11 +63,8 @@ const helpers = {
 			throw new errorCode('xbox.rate_limited', { statusCode: 429 });
 		}
 
-		if (response.status !== 200) {
-			// other API failure
-			throw new errorCode('xbox.bad_response_code', {
-				status: response.status,
-			});
+		if (response.status === 404) {
+			throw new failCode('xbox.not_found');
 		}
 
 		const contentType = response.headers.get('content-type');
@@ -76,13 +73,28 @@ const helpers = {
 				contentType: contentType || null,
 			});
 		}
-
+		let text = '';
 		let body = null;
 		try {
-			body = await response.json<any>();
-		} catch {
-			// we tried
+			text = await response.text();
+			body = text ? JSON.parse(text) : null;
+		} catch (err) {
+			console.error('Failed to parse Xbox API response as JSON:', err);
+			console.error(text);
 		}
+
+		if (response.status === 400 && body?.code === 59) {
+			throw new failCode('xbox.not_found');
+		}
+
+		if (response.status !== 200) {
+			// other API failure
+			console.log('Xbox API returned error status:', response.status, body);
+			throw new errorCode('xbox.bad_response_code', {
+				status: response.status,
+			});
+		}
+
 
 		if (!body || body.status === false) {
 			throw new errorCode('xbox.bad_response', { message: body?.message });
