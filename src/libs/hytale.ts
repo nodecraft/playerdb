@@ -324,6 +324,11 @@ async function fetchProfileFromApi(
 			requestType = 'container';
 		} catch (containerErr: any) {
 			maybeReportRateLimit(containerErr, sessionToken, tokenManager, ctx);
+			// If the original HTTP error was a rate limit, preserve that context
+			// so getProfile() can try the Nodecraft API fallback
+			if (httpErr?.code === 'hytale.rate_limited' || httpErr?.statusCode === 429) {
+				throw httpErr;
+			}
 			throw containerErr;
 		}
 	}
@@ -406,19 +411,20 @@ async function getProfile(
 				returnData.meta.cached_at = Math.round(Date.now() / 1000);
 				request_type = 'container_fallback';
 			} catch (containerErr: any) {
-				// Container also rate-limited, final fallback to Nodecraft API
-				if (containerErr?.code === 'hytale.rate_limited' || containerErr?.statusCode === 429) {
-					console.log('[Hytale] Container also rate-limited, trying Nodecraft API fallback');
-					const apiResponse = await helpers.nodecraftAPIRequest(query, containerToken, env);
-					console.log('[Hytale] Nodecraft API fallback response:', JSON.stringify(apiResponse, null, 2));
-
-					returnData = helpers.parse(apiResponse);
-					returnData.meta ??= {};
-					returnData.meta.cached_at = Math.round(Date.now() / 1000);
-					request_type = 'nodecraft_api';
-				} else {
+				// Container also failed — since we're already in the rate-limited
+				// recovery path, fall back to Nodecraft API for any error except
+				// not_found (which is a definitive answer, not a transient failure)
+				if (containerErr?.code === 'hytale.not_found') {
 					throw containerErr;
 				}
+				console.log('[Hytale] Container fallback also failed (%s), trying Nodecraft API fallback', containerErr?.code || containerErr?.message);
+				const apiResponse = await helpers.nodecraftAPIRequest(query, containerToken, env);
+				console.log('[Hytale] Nodecraft API fallback response:', JSON.stringify(apiResponse, null, 2));
+
+				returnData = helpers.parse(apiResponse);
+				returnData.meta ??= {};
+				returnData.meta.cached_at = Math.round(Date.now() / 1000);
+				request_type = 'nodecraft_api';
 			}
 		} else {
 			throw err;

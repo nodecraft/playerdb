@@ -64,7 +64,29 @@ const server = http.createServer((req, res) => {
 			};
 
 			const proxyReq = https.request(options, (proxyRes) => {
-				res.writeHead(proxyRes.statusCode ?? 500, {
+				const status = proxyRes.statusCode ?? 500;
+				if (status >= 500) {
+					let responseBody = '';
+					proxyRes.on('data', (chunk: Buffer) => {
+						responseBody += chunk;
+					});
+					proxyRes.on('end', () => {
+						console.error(`[Container] Upstream returned ${status} for ${targetUrl.pathname}:`, responseBody.slice(0, 500));
+						res.writeHead(status, {
+							'Content-Type': proxyRes.headers['content-type'] ?? 'application/json',
+						});
+						res.end(responseBody);
+					});
+					proxyRes.on('error', (err) => {
+						console.error(`[Container] Error reading upstream ${status} body:`, err.message);
+						if (!res.headersSent) {
+							res.writeHead(502);
+						}
+						res.end();
+					});
+					return;
+				}
+				res.writeHead(status, {
 					'Content-Type': proxyRes.headers['content-type'] ?? 'application/json',
 				});
 				proxyRes.pipe(res);
