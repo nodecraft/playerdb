@@ -108,6 +108,7 @@ const helpers = {
 
 		if (response.status !== 200) {
 			console.log('[Hytale] Got non-200 from Nodecraft API:', response.status);
+			console.log('[Hytale] Nodecraft API response body:', await response.text());
 			throw new errorCode('hytale.api_failure');
 		}
 
