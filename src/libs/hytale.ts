@@ -50,7 +50,86 @@ function handleStatusCode(statusCode: number, context: string): void {
 	}
 }
 
+/**
+ * Check if a string is a UUID format
+ */
+function isUuid(query: string): boolean {
+	const uuidRegex = /^[\da-f]{8}(?:-?[\da-f]{4}){3}-?[\da-f]{12}$/i;
+	return uuidRegex.test(query);
+}
+
 const helpers = {
+	/**
+	 * Final fallback: hit Nodecraft's internal controller API
+	 * Used when both direct HTTP and container proxy are rate-limited
+	 */
+	async nodecraftAPIRequest(
+		query: string,
+		sessionToken: string,
+		env: Environment,
+	): Promise<any> {
+		const url = new URL('/v2/playerdb', 'https://api.nodecraft.com');
+		url.searchParams.set('type', 'hytale');
+		url.searchParams.set('api_key', env.NODECRAFT_API_KEY ?? '');
+		url.searchParams.set('session_token', sessionToken);
+
+		if (isUuid(query)) {
+			url.searchParams.set('id', query);
+		} else {
+			url.searchParams.set('username', query);
+		}
+
+		let response;
+		try {
+			response = await fetch(url.href, {
+				headers: {
+					'content-type': 'application/json',
+					'accept': 'application/json',
+				},
+				method: 'GET',
+				cf: {
+					cacheEverything: true,
+					cacheTtl,
+				},
+				signal: AbortSignal.timeout(5000),
+			});
+		} catch (err) {
+			console.error('[Hytale] Nodecraft API request failed:', err);
+			throw new errorCode('hytale.api_failure');
+		}
+
+		if (response.status === 429) {
+			throw new errorCode('hytale.rate_limited', { statusCode: 429 });
+		}
+
+		if (response.status === 404) {
+			throw new failCode('hytale.not_found');
+		}
+
+		if (response.status !== 200) {
+			console.log('[Hytale] Got non-200 from Nodecraft API:', response.status);
+			throw new errorCode('hytale.api_failure');
+		}
+
+		const contentType = response.headers.get('content-type');
+		if (!contentType || !contentType.includes('json')) {
+			throw new errorCode('hytale.non_json', { contentType: contentType ?? null });
+		}
+
+		let body = null;
+		try {
+			body = await response.json<any>();
+		} catch {
+			// we tried
+		}
+
+		if (!body) {
+			throw new failCode('hytale.not_found');
+		}
+
+		return body;
+	},
+
 	async request(data: RequestData) {
 		const fetchOptions: RequestInit = {
 			method: 'GET',
@@ -178,14 +257,6 @@ function isValidIdentifier(query: string): boolean {
 	const uuidRegex = /^[\da-f]{8}(?:-?[\da-f]{4}){3}-?[\da-f]{12}$/i;
 
 	return usernameRegex.test(query) || uuidRegex.test(query);
-}
-
-/**
- * Check if a string is a UUID format
- */
-function isUuid(query: string): boolean {
-	const uuidRegex = /^[\da-f]{8}(?:-?[\da-f]{4}){3}-?[\da-f]{12}$/i;
-	return uuidRegex.test(query);
 }
 
 /**
@@ -325,13 +396,29 @@ async function getProfile(
 			const url = `${ACCOUNT_DATA_URL}${path}`;
 			const headers = { Authorization: `Bearer ${containerToken}` };
 
-			const apiResponse = await helpers.containerRequest(env, { url, headers });
-			console.log('[Hytale] Container fallback response:', JSON.stringify(apiResponse, null, 2));
+			try {
+				const apiResponse = await helpers.containerRequest(env, { url, headers });
+				console.log('[Hytale] Container fallback response:', JSON.stringify(apiResponse, null, 2));
 
-			returnData = helpers.parse(apiResponse);
-			returnData.meta ??= {};
-			returnData.meta.cached_at = Math.round(Date.now() / 1000);
-			request_type = 'container_fallback';
+				returnData = helpers.parse(apiResponse);
+				returnData.meta ??= {};
+				returnData.meta.cached_at = Math.round(Date.now() / 1000);
+				request_type = 'container_fallback';
+			} catch (containerErr: any) {
+				// Container also rate-limited, final fallback to Nodecraft API
+				if (containerErr?.code === 'hytale.rate_limited' || containerErr?.statusCode === 429) {
+					console.log('[Hytale] Container also rate-limited, trying Nodecraft API fallback');
+					const apiResponse = await helpers.nodecraftAPIRequest(query, containerToken, env);
+					console.log('[Hytale] Nodecraft API fallback response:', JSON.stringify(apiResponse, null, 2));
+
+					returnData = helpers.parse(apiResponse);
+					returnData.meta ??= {};
+					returnData.meta.cached_at = Math.round(Date.now() / 1000);
+					request_type = 'nodecraft_api';
+				} else {
+					throw containerErr;
+				}
+			}
 		} else {
 			throw err;
 		}
