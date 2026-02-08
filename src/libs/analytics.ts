@@ -25,9 +25,10 @@ export function writeDataPoint(
 		userAgent = userAgent.split('played by ')[0].trim();
 	}
 
+	const type = data.type || 'unknown';
 	const reportData: AnalyticsEngineDataPoint = {
 		blobs: [
-			data.type || 'unknown',
+			type,
 			data.error || '',
 			data.request_type || 'unknown', // http | tcp | nodecraft_api
 			request.url,
@@ -45,6 +46,7 @@ export function writeDataPoint(
 			responseTime,
 			data.status || 0,
 		],
+		indexes: [type],
 	};
 	if (!ctx.env.PLAYERDB_ANALYTICS) {
 		return;
