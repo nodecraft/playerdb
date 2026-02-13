@@ -1,6 +1,7 @@
 import { writeDataPoint } from './analytics';
 import * as helperCodes from './helpers';
 import { errorCode, failCode } from './helpers';
+import { HYTALE_TOKEN_MANAGER_ID } from '../types';
 
 import type { Environment, HonoEnv } from '../types';
 import type { HytaleTokenManager } from './hytale-token-manager';
@@ -153,7 +154,14 @@ const helpers = {
 			throw new errorCode('hytale.api_failure');
 		}
 
-		handleStatusCode(response.status, 'HTTP request');
+		console.log('[Hytale] HTTP response status:', response.status);
+
+		if (response.status !== 200) {
+			const responseBody = await response.text().catch(() => '<unable to read body>');
+			console.log('[Hytale] HTTP error response body:', responseBody);
+			handleStatusCode(response.status, 'HTTP request');
+			throw new errorCode('hytale.api_failure');
+		}
 
 		const contentType = response.headers.get('content-type');
 		if (!contentType || !contentType.includes('json')) {
@@ -215,7 +223,14 @@ const helpers = {
 			throw new errorCode('hytale.api_failure');
 		}
 
-		handleStatusCode(response.status, 'Container proxy');
+		console.log('[Hytale] Container response status:', response.status);
+
+		if (response.status !== 200) {
+			const responseBody = await response.text().catch(() => '<unable to read body>');
+			console.log('[Hytale] Container error response body:', responseBody);
+			handleStatusCode(response.status, 'Container proxy');
+			throw new errorCode('hytale.api_failure');
+		}
 
 		const contentType = response.headers.get('content-type');
 		if (!contentType || !contentType.includes('json')) {
@@ -243,7 +258,7 @@ const helpers = {
  * Uses a singleton ID since we only need one token manager
  */
 function getTokenManager(env: Environment): DurableObjectStub<HytaleTokenManager> {
-	const id = env.HYTALE_TOKEN_MANAGER.idFromName('singleton');
+	const id = env.HYTALE_TOKEN_MANAGER.idFromName(HYTALE_TOKEN_MANAGER_ID);
 	return env.HYTALE_TOKEN_MANAGER.get(id);
 }
 
@@ -427,6 +442,7 @@ async function getProfile(
 				request_type = 'nodecraft_api';
 			}
 		} else {
+			console.error(err);
 			throw err;
 		}
 	}

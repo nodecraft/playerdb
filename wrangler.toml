@@ -36,6 +36,15 @@ new_classes = ["HytaleTokenManager"]
 tag = "v2"
 new_sqlite_classes = ["HytaleProxyContainer"]
 
+[[migrations]]
+tag = "v3"
+renamed_classes = [{from = "HytaleTokenManager", to = "HytaleTokenManager_old"}]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["HytaleTokenManager"]
+deleted_classes = ["HytaleTokenManager_old"]
+
 # Daily cron for Hytale refresh token rotation (runs at 3:00 AM UTC)
 [triggers]
 crons = ["0 3 * * *"]
