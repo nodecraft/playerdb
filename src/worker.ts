@@ -336,5 +336,8 @@ export default {
 // durable object class for hytale token management
 export { HytaleTokenManager } from './libs/hytale-token-manager';
 
+// legacy stub for v3 migration rename — can be removed once migration is applied
+export { DurableObject as HytaleTokenManagerLegacy } from 'cloudflare:workers';
+
 // container DO class for hytale proxy
 export { HytaleProxyContainer } from './libs/hytale-proxy-container';
