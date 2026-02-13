@@ -7,6 +7,7 @@ import hytaleLookup from './libs/hytale';
 import minecraftLookup from './libs/minecraft';
 import steamLookup from './libs/steam';
 import xboxLookup from './libs/xbox';
+import { HYTALE_TOKEN_MANAGER_ID } from './types';
 
 import type { Environment, HonoEnv } from './types';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -237,6 +238,20 @@ app.onError((err, ctx) => {
 		responseData = { message, code: code, data };
 		responseData.success = false;
 		responseData.error = err instanceof helpers.errorCode;
+	} else if ('code' in err && typeof err.code === 'string' && err.code.includes('.')) {
+		// Errors from Durable Object RPC lose their prototype chain,
+		// so instanceof checks fail. Fall back to duck-typing by .code property.
+		// Use .name if it survived RPC serialization, otherwise fall back to
+		// a known failCode set since .name preservation isn't guaranteed.
+		const FAIL_CODES = new Set(['hytale.not_found', 'hytale.invalid_identifier', 'api.404']);
+		const nameKnown = err.name === 'errorCode' || err.name === 'failCode';
+		responseData = {
+			message: err.message,
+			code: err.code,
+			data: 'data' in err ? err.data : {},
+		};
+		responseData.success = false;
+		responseData.error = nameKnown ? err.name === 'errorCode' : !FAIL_CODES.has(err.code);
 	}
 
 	// set status code appropriately
@@ -250,6 +265,11 @@ app.onError((err, ctx) => {
 	// handle `api.404` code specifically as a 404 status
 	if ('code' in err && err.code === 'api.404') {
 		status = 404;
+	}
+
+	// @ts-expect-error errors aren't properly typed
+	if (!err.code) {
+		console.error('Error without code property:', err, JSON.stringify(err));
 	}
 
 	writeDataPoint(ctx, {
@@ -305,7 +325,7 @@ export default {
 
 	// refresh Hytale token periodically to avoid expiration
 	async scheduled(event, env, ctx): Promise<void> {
-		const id = env.HYTALE_TOKEN_MANAGER.idFromName('singleton');
+		const id = env.HYTALE_TOKEN_MANAGER.idFromName(HYTALE_TOKEN_MANAGER_ID);
 		const tokenManager = env.HYTALE_TOKEN_MANAGER.get(id);
 
 		const result = await tokenManager.proactiveRefresh();

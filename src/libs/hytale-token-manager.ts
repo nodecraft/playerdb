@@ -200,11 +200,18 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 
 		const response = await fetch(options.url, fetchOptions);
 
-		if (response.status === 401 || response.status === 403) {
-			throw new errorCode('hytale.auth_failure', { statusCode: response.status });
-		}
-
 		if (response.status !== 200) {
+			let responseBody: string;
+			try {
+				responseBody = await response.text();
+			} catch {
+				responseBody = '<unable to read response body>';
+			}
+			console.log('[Hytale] API request failed:', options.url, 'Status:', response.status, 'Response:', responseBody);
+
+			if (response.status === 401 || response.status === 403) {
+				throw new errorCode('hytale.auth_failure', { statusCode: response.status });
+			}
 			throw new errorCode('hytale.api_failure', { statusCode: response.status as ContentfulStatusCode });
 		}
 
@@ -238,7 +245,14 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 	 */
 	private async doRefreshAccessToken(): Promise<string> {
 		const tokens = await this.loadTokens();
+		const usingStoredToken = Boolean(tokens.refreshToken);
 		const refreshToken = await this.getRefreshToken();
+
+		const tokenAge = tokens.refreshTokenRotatedAt
+			? Math.floor((Date.now() - tokens.refreshTokenRotatedAt) / (24 * 60 * 60 * 1000))
+			: null;
+		const tokenSource = usingStoredToken ? 'stored' : 'env';
+		console.log(`[Hytale] Attempting access token refresh (source: ${tokenSource}, token age: ${tokenAge ?? 'unknown'} days)`);
 
 		let tokenResponse;
 		try {
@@ -252,14 +266,19 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 				},
 			});
 		} catch (err) {
-			// If refresh failed and we were using a stored token, clear it
-			// so next attempt falls back to env var (allows recovery)
-			console.log('[Hytale] Access token refresh failed:', err);
-			if (tokens.refreshToken) {
+			const errDetail = (err as any)?.code || (err as any)?.message || err;
+			console.log(`[Hytale] Access token refresh failed (source: ${tokenSource}, token age: ${tokenAge ?? 'unknown'} days):`, errDetail);
+			if (usingStoredToken) {
+				// Stored (rotated) refresh token failed. Clear it so the next attempt
+				// falls back to the env var. NOTE: if the token was rotated, the env
+				// var holds the pre-rotation token which is likely also invalid — the
+				// env var must be updated with a fresh token to recover.
 				console.log('[Hytale] Clearing stored refresh token to allow recovery via env var');
 				tokens.refreshToken = undefined;
 				tokens.refreshTokenRotatedAt = undefined;
 				await this.saveTokens();
+			} else {
+				console.log('[Hytale] Env var refresh token failed — no fallback available. A new refresh token must be configured.');
 			}
 			throw err;
 		}
@@ -274,11 +293,18 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 		tokens.accessToken = tokenResponse.access_token;
 		tokens.accessTokenExpiresAt = now + expiresInMs;
 
-		// Handle refresh token rotation
+		// Handle refresh token rotation — only store rotated tokens when we
+		// were already using a stored token. When falling back to the env var
+		// (after a stored token failure), storing the rotated token would create
+		// a cycle: cron stores rotated token → request fails → clears → repeat.
 		if (tokenResponse.refresh_token && tokenResponse.refresh_token !== refreshToken) {
-			console.log('[Hytale] Refresh token rotated, storing new token');
-			tokens.refreshToken = tokenResponse.refresh_token;
-			tokens.refreshTokenRotatedAt = now;
+			if (usingStoredToken) {
+				console.log('[Hytale] Refresh token rotated, storing new token');
+				tokens.refreshToken = tokenResponse.refresh_token;
+				tokens.refreshTokenRotatedAt = now;
+			} else {
+				console.log('[Hytale] Refresh token rotated by server, but not storing (using env var fallback)');
+			}
 		}
 
 		// Track initial rotation time if not set
