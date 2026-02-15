@@ -301,6 +301,11 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 		tokens.accessToken = tokenResponse.access_token;
 		tokens.accessTokenExpiresAt = now + expiresInMs;
 
+		// Log response shape (without sensitive values) to verify rotation behavior
+		console.log('[Hytale] Token response fields:', Object.keys(tokenResponse).join(', '));
+		const rotationStatus = tokenResponse.refresh_token === refreshToken ? '(unchanged)' : '(new)';
+		console.log('[Hytale] Refresh token in response:', tokenResponse.refresh_token ? 'present' : 'absent', rotationStatus);
+
 		// Handle refresh token rotation — always store rotated tokens so they
 		// survive across access token refreshes. If the stored token later fails,
 		// it gets cleared and the env var is used as fallback (see catch block above).
@@ -308,6 +313,12 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 			console.log('[Hytale] Refresh token rotated, storing new token');
 			tokens.refreshToken = tokenResponse.refresh_token;
 			tokens.refreshTokenRotatedAt = now;
+		} else if (!tokenResponse.refresh_token) {
+			// Server didn't return a refresh token — store the one we just used
+			// so it survives even if the env var is changed later
+			console.log('[Hytale] No refresh token in response, preserving current token');
+			tokens.refreshToken = refreshToken;
+			tokens.refreshTokenRotatedAt = tokens.refreshTokenRotatedAt || now;
 		}
 
 		// Track initial rotation time if not set
