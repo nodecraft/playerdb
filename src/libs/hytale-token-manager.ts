@@ -4,6 +4,8 @@ import { errorCode } from './helpers';
 
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
+export type TokenResult = { ok: true; token: string; } | { ok: false; code: string; message: string; statusCode?: number; isAuthError?: boolean; };
+
 // Hytale OAuth and API URLs
 const OAUTH_BASE_URL = 'https://oauth.accounts.hytale.com';
 const ACCOUNT_DATA_URL = 'https://account-data.hytale.com';
@@ -269,14 +271,20 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 			const errDetail = (err as any)?.code || (err as any)?.message || err;
 			console.log(`[Hytale] Access token refresh failed (source: ${tokenSource}, token age: ${tokenAge ?? 'unknown'} days):`, errDetail);
 			if (usingStoredToken) {
-				// Stored (rotated) refresh token failed. Clear it so the next attempt
-				// falls back to the env var. NOTE: if the token was rotated, the env
-				// var holds the pre-rotation token which is likely also invalid — the
-				// env var must be updated with a fresh token to recover.
-				console.log('[Hytale] Clearing stored refresh token to allow recovery via env var');
+				// Stored (rotated) refresh token failed. Clear it and immediately
+				// retry with the env var rather than failing the current request.
+				// Safe from looping: clearing refreshToken causes the retry's
+				// usingStoredToken to be false, so a second failure throws instead
+				// of recursing again.
+				console.log('[Hytale] Clearing stored refresh token, retrying with env var');
 				tokens.refreshToken = undefined;
 				tokens.refreshTokenRotatedAt = undefined;
 				await this.saveTokens();
+
+				if (this.env.HYTALE_REFRESH_TOKEN) {
+					return this.doRefreshAccessToken();
+				}
+				console.log('[Hytale] No env var refresh token available for fallback');
 			} else {
 				console.log('[Hytale] Env var refresh token failed — no fallback available. A new refresh token must be configured.');
 			}
@@ -293,18 +301,13 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 		tokens.accessToken = tokenResponse.access_token;
 		tokens.accessTokenExpiresAt = now + expiresInMs;
 
-		// Handle refresh token rotation — only store rotated tokens when we
-		// were already using a stored token. When falling back to the env var
-		// (after a stored token failure), storing the rotated token would create
-		// a cycle: cron stores rotated token → request fails → clears → repeat.
+		// Handle refresh token rotation — always store rotated tokens so they
+		// survive across access token refreshes. If the stored token later fails,
+		// it gets cleared and the env var is used as fallback (see catch block above).
 		if (tokenResponse.refresh_token && tokenResponse.refresh_token !== refreshToken) {
-			if (usingStoredToken) {
-				console.log('[Hytale] Refresh token rotated, storing new token');
-				tokens.refreshToken = tokenResponse.refresh_token;
-				tokens.refreshTokenRotatedAt = now;
-			} else {
-				console.log('[Hytale] Refresh token rotated by server, but not storing (using env var fallback)');
-			}
+			console.log('[Hytale] Refresh token rotated, storing new token');
+			tokens.refreshToken = tokenResponse.refresh_token;
+			tokens.refreshTokenRotatedAt = now;
 		}
 
 		// Track initial rotation time if not set
@@ -892,15 +895,23 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 	 * This is the main entry point for the worker
 	 * Uses the session pool with round-robin selection
 	 */
-	async getSessionToken(force: boolean = false): Promise<string> {
+	async getSessionToken(force: boolean = false): Promise<TokenResult> {
 		console.log('[Hytale] getSessionToken called (force:', force, ')');
 
-		// Ensure we have at least the minimum number of sessions
-		await this.ensureMinPool();
+		try {
+			// Ensure we have at least the minimum number of sessions
+			await this.ensureMinPool();
 
-		// Get the next available session from the pool
-		const session = await this.getNextSession();
-		return session.sessionToken;
+			// Get the next available session from the pool
+			const session = await this.getNextSession();
+			return { ok: true, token: session.sessionToken };
+		} catch (err: any) {
+			const code = (typeof err?.code === 'string' && err.code.startsWith('hytale.')) ? err.code : 'hytale.api_failure';
+			const message = err?.message || 'Unknown token manager error';
+			const isAuthError = err?.isAuthError || code === 'hytale.auth_failure';
+			console.error('[Hytale] getSessionToken failed:', code, message);
+			return { ok: false, code, message, statusCode: err?.statusCode, isAuthError };
+		}
 	}
 
 	/**
@@ -908,34 +919,42 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 	 * Prefers sessions not marked as rate-limited (in case there's token-level limiting too)
 	 * Falls back to rate-limited sessions sorted by oldest rate-limit time
 	 */
-	async getSessionTokenForContainer(): Promise<string> {
+	async getSessionTokenForContainer(): Promise<TokenResult> {
 		console.log('[Hytale] getSessionTokenForContainer called');
 
-		const tokens = await this.loadTokens();
+		try {
+			const tokens = await this.loadTokens();
 
-		if (!tokens.sessions || tokens.sessions.length === 0) {
-			throw new errorCode('hytale.no_sessions');
+			if (!tokens.sessions || tokens.sessions.length === 0) {
+				throw new errorCode('hytale.no_sessions');
+			}
+
+			const now = Date.now();
+			const validSessions = tokens.sessions.filter(session => this.isSessionInfoValid(session));
+
+			if (validSessions.length === 0) {
+				throw new errorCode('hytale.no_sessions');
+			}
+
+			// Prefer sessions that aren't currently marked as rate-limited
+			const notRateLimited = validSessions.filter(session => !session.rateLimitedUntil || session.rateLimitedUntil <= now);
+			if (notRateLimited.length > 0) {
+				console.log('[Hytale] Found non-rate-limited session for container fallback');
+				return { ok: true, token: notRateLimited[0].sessionToken };
+			}
+
+			// All sessions are rate-limited, pick the one whose rate-limit was set longest ago
+			// (most time for any token-level rate limit to have cleared)
+			const sorted = validSessions.sort((sessionA, sessionB) => (sessionA.rateLimitedUntil ?? 0) - (sessionB.rateLimitedUntil ?? 0));
+			console.log('[Hytale] All sessions rate-limited, using oldest for container fallback');
+			return { ok: true, token: sorted[0].sessionToken };
+		} catch (err: any) {
+			const code = (typeof err?.code === 'string' && err.code.startsWith('hytale.')) ? err.code : 'hytale.api_failure';
+			const message = err?.message || 'Unknown token manager error';
+			const isAuthError = err?.isAuthError || code === 'hytale.auth_failure';
+			console.error('[Hytale] getSessionTokenForContainer failed:', code, message);
+			return { ok: false, code, message, statusCode: err?.statusCode, isAuthError };
 		}
-
-		const now = Date.now();
-		const validSessions = tokens.sessions.filter(session => this.isSessionInfoValid(session));
-
-		if (validSessions.length === 0) {
-			throw new errorCode('hytale.no_sessions');
-		}
-
-		// Prefer sessions that aren't currently marked as rate-limited
-		const notRateLimited = validSessions.filter(session => !session.rateLimitedUntil || session.rateLimitedUntil <= now);
-		if (notRateLimited.length > 0) {
-			console.log('[Hytale] Found non-rate-limited session for container fallback');
-			return notRateLimited[0].sessionToken;
-		}
-
-		// All sessions are rate-limited, pick the one whose rate-limit was set longest ago
-		// (most time for any token-level rate limit to have cleared)
-		const sorted = validSessions.sort((sessionA, sessionB) => (sessionA.rateLimitedUntil ?? 0) - (sessionB.rateLimitedUntil ?? 0));
-		console.log('[Hytale] All sessions rate-limited, using oldest for container fallback');
-		return sorted[0].sessionToken;
 	}
 
 	/**

@@ -5,6 +5,7 @@ import { HYTALE_TOKEN_MANAGER_ID } from '../types';
 
 import type { Environment, HonoEnv } from '../types';
 import type { HytaleTokenManager } from './hytale-token-manager';
+import type { TokenResult } from './hytale-token-manager';
 import type { Context } from 'hono';
 
 const ACCOUNT_DATA_URL = 'https://account-data.hytale.com';
@@ -263,6 +264,61 @@ function getTokenManager(env: Environment): DurableObjectStub<HytaleTokenManager
 }
 
 /**
+ * Call a DO token method and unwrap the result into a session token string.
+ * Handles two failure modes:
+ * 1. Cloudflare infrastructure errors (overloaded, reset, storage timeout) that
+ *    bypass the DO's internal try/catch and throw before the method runs.
+ * 2. Business logic errors returned as { ok: false } from the DO method.
+ * Both are converted into properly-typed errorCode/failCode instances
+ * so the existing catch logic (isAuthError, .code checks) still works.
+ */
+async function resolveSessionToken(resultPromise: Promise<TokenResult>): Promise<string> {
+	let result: TokenResult;
+	try {
+		result = await resultPromise;
+	} catch (err: any) {
+		// DO infrastructure error (overloaded, reset, storage timeout, etc.)
+		console.error('[Hytale] DO infrastructure error:', err?.message || err);
+		const userCode = err?.overloaded ? 'hytale.rate_limited' : 'hytale.api_failure';
+		const analyticsCode = err?.overloaded ? 'do_overloaded' : 'do_unavailable';
+		const doErr = new errorCode(userCode as ConstructorParameters<typeof errorCode>[0]);
+		(doErr as any).analyticsCode = analyticsCode;
+		if (err?.overloaded) {
+			(doErr as any).statusCode = 429;
+		}
+		throw doErr;
+	}
+
+	if (result.ok) {
+		return result.token;
+	}
+
+	// User-facing response uses the original error code from the DO.
+	// Analytics gets a do_ prefixed version so DO failures are distinguishable.
+	const analyticsCode = 'do_' + (result.code.startsWith('hytale.') ? result.code.slice(7) : result.code);
+
+	let err: errorCode | failCode;
+	try {
+		if (result.code === 'hytale.not_found' || result.code === 'hytale.invalid_identifier') {
+			err = new failCode(result.code as ConstructorParameters<typeof failCode>[0]);
+		} else {
+			err = new errorCode(result.code as ConstructorParameters<typeof errorCode>[0]);
+		}
+	} catch {
+		// Code not in error codes registry (e.g. new DO code not yet added to JSON)
+		err = new errorCode('hytale.api_failure');
+	}
+	(err as any).analyticsCode = analyticsCode;
+	if (result.isAuthError) {
+		(err as any).isAuthError = true;
+	}
+	if (result.statusCode) {
+		(err as any).statusCode = result.statusCode;
+	}
+	throw err;
+}
+
+/**
  * Validate a Hytale player identifier
  * Accepts:
  * - Usernames: 3-16 alphanumeric characters with underscores
@@ -393,7 +449,7 @@ async function getProfile(
 	let request_type: string;
 	try {
 		console.log('[Hytale] Fetching profile from API');
-		const sessionToken = await tokenManager.getSessionToken();
+		const sessionToken = await resolveSessionToken(tokenManager.getSessionToken());
 		const result = await fetchProfileFromApi(query, sessionToken, env, tokenManager, ctx);
 		returnData = result.data;
 		request_type = result.request_type;
@@ -401,8 +457,13 @@ async function getProfile(
 		// If auth error, invalidate tokens and retry with fresh ones
 		if (err?.isAuthError) {
 			console.log('[Hytale] Auth error, invalidating tokens and retrying');
-			await tokenManager.invalidateTokens();
-			const freshToken = await tokenManager.getSessionToken(true);
+			try {
+				await tokenManager.invalidateTokens();
+			} catch (invalidateErr: any) {
+				// Best-effort: if the DO reset, tokens are already gone
+				console.error('[Hytale] Failed to invalidate tokens (continuing with retry):', invalidateErr?.message || invalidateErr);
+			}
+			const freshToken = await resolveSessionToken(tokenManager.getSessionToken(true));
 			const result = await fetchProfileFromApi(query, freshToken, env, tokenManager, ctx);
 			returnData = result.data;
 			request_type = result.request_type;
@@ -410,7 +471,7 @@ async function getProfile(
 			// All sessions are rate-limited from worker's IP, try container fallback
 			// Rate limiting is IP-based, so container (different IP) might work
 			console.log('[Hytale] All sessions rate-limited, trying container fallback');
-			const containerToken = await tokenManager.getSessionTokenForContainer();
+			const containerToken = await resolveSessionToken(tokenManager.getSessionTokenForContainer());
 			const path = isUuid(query)
 				? `/profile/uuid/${encodeURIComponent(query)}`
 				: `/profile/username/${encodeURIComponent(query)}`;
