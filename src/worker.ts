@@ -275,7 +275,7 @@ app.onError((err, ctx) => {
 	writeDataPoint(ctx, {
 		type,
 		// @ts-expect-error errors aren't properly typed
-		error: err.code || 'unknown',
+		error: err.analyticsCode || err.code || 'unknown',
 		status,
 	});
 
