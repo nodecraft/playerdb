@@ -1,6 +1,7 @@
 name = "playerdb-dev"
 account_id = "59a6a7816e5ccdd2ef4dc158bcd8b014"
 workers_dev = true
+send_metrics = false
 compatibility_date = "2025-08-16"
 compatibility_flags = [
 	"nodejs_compat",
