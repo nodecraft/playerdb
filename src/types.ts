@@ -2,7 +2,7 @@ import type { HytaleProxyContainer } from './libs/hytale-proxy-container';
 import type { HytaleTokenManager } from './libs/hytale-token-manager';
 
 // Change this to reset the token manager DO (creates a fresh instance with empty storage)
-export const HYTALE_TOKEN_MANAGER_ID = 'singleton-2026-03-04';
+export const HYTALE_TOKEN_MANAGER_ID = 'singleton-2026-03-04a';
 
 export interface Environment {
 	ASSETS: Fetcher;
