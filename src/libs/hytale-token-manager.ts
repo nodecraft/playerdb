@@ -269,14 +269,21 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 			});
 		} catch (err) {
 			const errDetail = (err as any)?.code || (err as any)?.message || err;
-			console.log(`[Hytale] Access token refresh failed (source: ${tokenSource}, token age: ${tokenAge ?? 'unknown'} days):`, errDetail);
-			if (usingStoredToken) {
-				// Stored (rotated) refresh token failed. Clear it and immediately
-				// retry with the env var rather than failing the current request.
-				// Safe from looping: clearing refreshToken causes the retry's
-				// usingStoredToken to be false, so a second failure throws instead
-				// of recursing again.
-				console.log('[Hytale] Clearing stored refresh token, retrying with env var');
+			const statusCode = (err as any)?.statusCode;
+			console.log(`[Hytale] Access token refresh failed (source: ${tokenSource}, token age: ${tokenAge ?? 'unknown'} days, status: ${statusCode ?? 'unknown'}):`, errDetail);
+
+			// Only fall back to env var for client errors (4xx) where the token
+			// itself is likely invalid. For server errors (5xx), the stored
+			// token is probably fine — clearing it would be destructive since
+			// the env var token was likely already invalidated by rotation.
+			const isTokenError = statusCode && statusCode >= 400 && statusCode < 500;
+
+			if (usingStoredToken && isTokenError) {
+				// Stored (rotated) refresh token failed with a client error.
+				// Clear it and retry with the env var. Safe from looping:
+				// clearing refreshToken causes the retry's usingStoredToken
+				// to be false, so a second failure throws instead of recursing.
+				console.log('[Hytale] Clearing stored refresh token (client error), retrying with env var');
 				tokens.refreshToken = undefined;
 				tokens.refreshTokenRotatedAt = undefined;
 				await this.saveTokens();
@@ -285,6 +292,8 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 					return this.doRefreshAccessToken();
 				}
 				console.log('[Hytale] No env var refresh token available for fallback');
+			} else if (usingStoredToken) {
+				console.log('[Hytale] Server error — preserving stored refresh token for retry');
 			} else {
 				console.log('[Hytale] Env var refresh token failed — no fallback available. A new refresh token must be configured.');
 			}
@@ -306,24 +315,24 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 		const rotationStatus = tokenResponse.refresh_token === refreshToken ? '(unchanged)' : '(new)';
 		console.log('[Hytale] Refresh token in response:', tokenResponse.refresh_token ? 'present' : 'absent', rotationStatus);
 
-		// Handle refresh token rotation — always store rotated tokens so they
-		// survive across access token refreshes. If the stored token later fails,
-		// it gets cleared and the env var is used as fallback (see catch block above).
+		// Always store the refresh token after a successful refresh so it
+		// survives DO eviction. If the stored token later fails with a client
+		// error, it gets cleared and the env var is used as fallback.
 		if (tokenResponse.refresh_token && tokenResponse.refresh_token !== refreshToken) {
 			console.log('[Hytale] Refresh token rotated, storing new token');
 			tokens.refreshToken = tokenResponse.refresh_token;
 			tokens.refreshTokenRotatedAt = now;
-		} else if (!tokenResponse.refresh_token) {
+		} else if (tokenResponse.refresh_token) {
+			// Server returned the same token — store it so it persists in DO
+			// storage even if the DO is evicted and re-instantiated
+			console.log('[Hytale] Refresh token unchanged, persisting to storage');
+			tokens.refreshToken = tokenResponse.refresh_token;
+			tokens.refreshTokenRotatedAt = tokens.refreshTokenRotatedAt || now;
+		} else {
 			// Server didn't return a refresh token — store the one we just used
-			// so it survives even if the env var is changed later
 			console.log('[Hytale] No refresh token in response, preserving current token');
 			tokens.refreshToken = refreshToken;
 			tokens.refreshTokenRotatedAt = tokens.refreshTokenRotatedAt || now;
-		}
-
-		// Track initial rotation time if not set
-		if (!tokens.refreshTokenRotatedAt) {
-			tokens.refreshTokenRotatedAt = now;
 		}
 
 		await this.saveTokens();
