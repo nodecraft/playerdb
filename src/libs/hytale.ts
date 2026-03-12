@@ -171,7 +171,7 @@ const helpers = {
 			});
 		}
 
-		let body = null;
+		let body;
 		try {
 			body = await response.json<any>();
 		} catch (parseErr) {
@@ -240,7 +240,7 @@ const helpers = {
 			});
 		}
 
-		let body = null;
+		let body;
 		try {
 			body = await response.json<any>();
 		} catch (parseErr) {
