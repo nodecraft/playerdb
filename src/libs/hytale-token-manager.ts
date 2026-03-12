@@ -353,8 +353,8 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 
 		// Fast path: return cached token if still valid (no blocking needed)
 		if (!force && this.isAccessTokenValid(tokens)) {
-			console.log('[Hytale] Using cached access token (valid for', Math.round((tokens.accessTokenExpiresAt! - Date.now()) / 60000), 'min)');
-			return tokens.accessToken!;
+			console.log('[Hytale] Using cached access token (valid for', Math.round(((tokens.accessTokenExpiresAt ?? 0) - Date.now()) / 60000), 'min)');
+			return tokens.accessToken as string;
 		}
 
 		console.log('[Hytale] Access token refresh needed (force:', force, ')');
@@ -365,7 +365,7 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 			const tokens = await this.loadTokens();
 			if (!force && this.isAccessTokenValid(tokens)) {
 				console.log('[Hytale] Access token refreshed by another request while waiting');
-				return tokens.accessToken!;
+				return tokens.accessToken as string;
 			}
 
 			console.log('[Hytale] Performing access token refresh');
@@ -856,8 +856,8 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 
 		// Fast path: return cached session token if still valid (no blocking needed)
 		if (!force && this.isSessionTokenValid(tokens)) {
-			console.log('[Hytale] Using cached session token (valid for', Math.round((tokens.identityTokenExpiresAt! - Date.now()) / 60000), 'min)');
-			return tokens.sessionToken!;
+			console.log('[Hytale] Using cached session token (valid for', Math.round(((tokens.identityTokenExpiresAt ?? 0) - Date.now()) / 60000), 'min)');
+			return tokens.sessionToken as string;
 		}
 
 		console.log('[Hytale] Session operation needed (force:', force, ')');
@@ -868,7 +868,7 @@ export class HytaleTokenManager extends DurableObject<TokenManagerEnv> {
 			const tokens = await this.loadTokens();
 			if (!force && this.isSessionTokenValid(tokens)) {
 				console.log('[Hytale] Session refreshed by another request while waiting');
-				return tokens.sessionToken!;
+				return tokens.sessionToken as string;
 			}
 
 			console.log('[Hytale] Performing session operation');

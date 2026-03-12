@@ -1,4 +1,3 @@
-// eslint-disable-next-line n/no-missing-import
 import { connect } from 'cloudflare:sockets';
 
 import { writeDataPoint } from './analytics';
@@ -162,7 +161,6 @@ const helpers = {
 			// This avoids issues with multi-byte UTF-8 characters being split across TCP chunks.
 			const chunks: Uint8Array[] = [];
 			let totalLength = 0;
-			// eslint-disable-next-line no-constant-condition
 			while (true) {
 				const { done, value } = await reader.read();
 				if (done) {
@@ -482,7 +480,7 @@ const lookup = async function lookup(
 	}
 
 	const returnData: Record<string, any> = { meta: {} };
-	let profile = null;
+	let profile;
 	if (username.length === 32 || username.length === 36) {
 		profile = await mojangLib.profile(username, env, ctx);
 	} else {

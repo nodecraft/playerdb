@@ -19,7 +19,6 @@ type ErrorData = {
 	[key: string]: unknown;
 };
 class failCode extends Error {
-	// eslint-disable-line unicorn/custom-error-definition
 	code: string;
 	data: Record<string, unknown>;
 	statusCode?: ContentfulStatusCode;
@@ -41,7 +40,6 @@ class failCode extends Error {
 }
 
 class errorCode extends Error {
-	// eslint-disable-line unicorn/custom-error-definition
 	code: string;
 	data: Record<string, unknown>;
 	statusCode?: ContentfulStatusCode;
