@@ -1,24 +1,25 @@
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config';
+import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
 import { config } from 'dotenv';
+import { defineConfig } from 'vitest/config';
 
 config({ path: '.dev.vars' });
 
-export default defineWorkersConfig({
-	test: {
-		testTimeout: 10000,
-		poolOptions: {
-			workers: {
-				wrangler: {
-					configPath: './wrangler.toml',
-					environment: 'production',
-				},
-				miniflare: {
-					bindings: {
-						XBOX_APIKEY: process.env.XBOX_APIKEY || '',
-						STEAM_APIKEY: process.env.STEAM_APIKEY || '',
-					},
+export default defineConfig({
+	plugins: [
+		cloudflareTest({
+			wrangler: {
+				configPath: './wrangler.toml',
+				environment: 'production',
+			},
+			miniflare: {
+				bindings: {
+					XBOX_APIKEY: process.env.XBOX_APIKEY || '',
+					STEAM_APIKEY: process.env.STEAM_APIKEY || '',
 				},
 			},
-		},
+		}),
+	],
+	test: {
+		testTimeout: 10000,
 	},
 });
