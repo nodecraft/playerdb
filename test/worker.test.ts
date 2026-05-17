@@ -387,9 +387,10 @@ describe.skipIf(!env.XBOX_APIKEY)('xbox api', () => {
 			context.skip();
 			return;
 		}
-		expect(response.status).toBe(500);
 		expect(json.success).toBe(false);
-		expect(json.code).toEqual('xbox.bad_response_code');
+		// API may return not_found (400) or bad_response_code (500) depending on xbl.io behavior
+		expect([400, 500]).toContain(response.status);
+		expect(['xbox.not_found', 'xbox.bad_response_code']).toContain(json.code);
 	});
 
 	it('responds for unknown gamertag', async (context) => {
