@@ -63,10 +63,6 @@ const helpers = {
 			throw new errorCode('xbox.rate_limited', { statusCode: 429 });
 		}
 
-		if (response.status === 404) {
-			throw new failCode('xbox.not_found');
-		}
-
 		const contentType = response.headers.get('content-type');
 		if (!contentType || !contentType.includes('json')) {
 			throw new errorCode('xbox.non_json', {
@@ -83,10 +79,6 @@ const helpers = {
 			console.error(text);
 		}
 
-		if (response.status === 400 && body?.code === 59) {
-			throw new failCode('xbox.not_found');
-		}
-
 		if (response.status !== 200) {
 			// other API failure
 			console.log('Xbox API returned error status:', response.status, body);
@@ -95,20 +87,24 @@ const helpers = {
 			});
 		}
 
-
-		if (!body || body.status === false) {
-			throw new errorCode('xbox.bad_response', { message: body?.message });
+		if (!body || !body.content) {
+			throw new errorCode('xbox.bad_response');
 		}
 
-		if (body.code && body.description) {
-			// API responds with a 200 code, and a `code` and `description` on many errors
-			if (body.code === 2 || body.code === 28) {
-				// catch no user found. id uses code 2, username search uses 28
+		if (body.code === 429) {
+			// upstream api is rate limited contacting the xbox live services
+			throw new errorCode('xbox.rate_limited', { statusCode: 429 });
+		}
+
+		if (body.code !== 200) {
+			if (body.code === 404 || body.content.code === 59 || body.content.code === 28) {
+				// catch no user found. id uses code 59, username search uses 28
 				throw new failCode('xbox.not_found');
 			}
+
 			throw new errorCode('xbox.bad_response', {
-				message: body.description,
-				error_code: body.code,
+				message: body.content.description || null,
+				error_code: body.content.code || body.code,
 			});
 		}
 
@@ -118,8 +114,8 @@ const helpers = {
 	parse(data: Record<string, any>) {
 		let raw: Record<string, any> = {};
 		let player: Record<string, any> = {};
-		if (data?.profileUsers?.[0]) {
-			raw = data.profileUsers[0];
+		if (data?.content?.profileUsers?.[0]) {
+			raw = data.content.profileUsers[0];
 			player = { id: raw.id, meta: {} };
 		}
 
