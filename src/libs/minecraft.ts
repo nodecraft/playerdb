@@ -1,4 +1,5 @@
 import { connect } from 'cloudflare:sockets';
+import { tracing } from 'cloudflare:workers';
 
 import { writeDataPoint } from './analytics';
 import * as helperCodes from './helpers';
@@ -112,141 +113,176 @@ const helpers = {
 			url.search = new URLSearchParams(data.qs).toString();
 		}
 
-		const timeoutMs = 5000;
-		let socket: Awaited<ReturnType<typeof connect>> | null = null;
-		let timeoutId: ReturnType<typeof setTimeout> | null = null;
+		// Unlike `fetch`, raw `connect()` sockets aren't auto-instrumented, so
+		// trace this exchange manually. Attribute names follow OTel semconv.
+		return tracing.enterSpan('mojang.tcpRequest', async (span) => {
+			span.setAttribute('http.request.method', 'GET');
+			span.setAttribute('url.full', url.href);
+			span.setAttribute('url.scheme', 'https');
+			span.setAttribute('server.address', url.hostname);
+			span.setAttribute('server.port', 443);
+			span.setAttribute('network.transport', 'tcp');
+			span.setAttribute('network.protocol.name', 'http');
+			span.setAttribute('network.protocol.version', '1.1');
 
-		const timeoutPromise = new Promise<never>((_, reject) => {
-			timeoutId = setTimeout(() => {
-				// Close socket on timeout to free resources
-				if (socket) {
-					try {
-						socket.close();
-					} catch {
-						// Ignore close errors
+			const timeoutMs = 5000;
+			let socket: Awaited<ReturnType<typeof connect>> | null = null;
+			let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				timeoutId = setTimeout(() => {
+					span.setAttribute('error.type', 'timeout');
+					// Close socket on timeout to free resources
+					if (socket) {
+						try {
+							socket.close();
+						} catch {
+							// Ignore close errors
+						}
 					}
-				}
-				reject(new errorCode('minecraft.api_failure', { message: 'TCP request timed out' }));
-			}, timeoutMs);
-		});
-
-		const requestPromise = (async () => {
-			socket = await connect(
-				{
-					hostname: url.hostname,
-					port: 443,
-
-				},
-				{
-					secureTransport: 'on',
-					allowHalfOpen: false,
-				},
-			);
-
-			const writer = socket.writable.getWriter();
-			const encoder = new TextEncoder();
-			const rawHTTPReq = [
-				`GET ${url.pathname}${url.search} HTTP/1.1`,
-				`Host: ${url.hostname}`,
-				'Accept: application/json',
-				'Connection: close',
-			];
-			const joined = rawHTTPReq.join('\r\n');
-			const encoded = encoder.encode(`${joined}\r\n\r\n`);
-			await writer.write(encoded);
-
-			const reader = socket.readable.getReader();
-
-			// Collect all chunks as Uint8Arrays first, then decode at the end.
-			// This avoids issues with multi-byte UTF-8 characters being split across TCP chunks.
-			const chunks: Uint8Array[] = [];
-			let totalLength = 0;
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) {
-					break;
-				}
-				chunks.push(value);
-				totalLength += value.length;
-			}
-			socket.close();
-
-			// Concatenate all chunks and decode once
-			const combined = new Uint8Array(totalLength);
-			let offset = 0;
-			for (const chunk of chunks) {
-				combined.set(chunk, offset);
-				offset += chunk.length;
-			}
-			return new TextDecoder().decode(combined);
-		})();
-
-		let result: string;
-		try {
-			result = await Promise.race([requestPromise, timeoutPromise]);
-		} catch (err) {
-			// pass through minecraft errors (including timeout)
-			// @ts-expect-error error not properly typed
-			if (typeof err?.code === 'string' && err.code.startsWith('minecraft.')) {
-				throw err;
-			}
-			// catch socket errors generically (including DOMException with numeric codes)
-			console.error(err);
-			throw new errorCode('minecraft.api_failure');
-		} finally {
-			// Clear timeout if request completed successfully
-			if (timeoutId) {
-				clearTimeout(timeoutId);
-			}
-		}
-
-		const parsed = parseResponse(result);
-
-		if (parsed.statusCode === 429) {
-			// rate limited, we're done
-			throw new errorCode('minecraft.rate_limited', { statusCode: 429 });
-		}
-		let body = null;
-		try {
-			body = JSON.parse(parsed.bodyData);
-		} catch {
-			// we tried
-		}
-		if (
-			parsed.statusCode === 404 &&
-			body?.errorMessage?.includes?.('Couldn\'t find any profile with name')
-		) {
-			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
-		}
-
-		if (parsed.statusCode === 204 && !body) {
-			// bad username
-			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
-		}
-
-		if (parsed.statusCode === 400 && body?.error === 'CONSTRAINT_VIOLATION') {
-			// mojang returns 400 with this body if the username is invalid (eg too long)
-			throw new failCode('minecraft.invalid_username', { statusCode: 400 });
-		}
-
-		if (parsed.statusCode !== 200) {
-			// other API failure
-			console.log(
-				'got non-200 response from TCP mojang',
-				parsed.statusCode,
-				body,
-			);
-			throw new errorCode('minecraft.api_failure');
-		}
-
-		const contentType = parsed.headers['content-type'];
-		if (!contentType || !contentType.includes('json')) {
-			throw new errorCode('minecraft.non_json', {
-				contentType: contentType || null,
+					reject(new errorCode('minecraft.api_failure', { message: 'TCP request timed out' }));
+				}, timeoutMs);
 			});
-		}
-		body.request_type = 'tcp';
-		return body;
+
+			const requestPromise = (async () => {
+				// `connect()` returns before the handshake completes; await `opened`
+				// inside the span so it captures the TCP + TLS handshake time.
+				const sock = await tracing.enterSpan('tcp.connect', async () => {
+					const tcpSocket = connect(
+						{
+							hostname: url.hostname,
+							port: 443,
+						},
+						{
+							secureTransport: 'on',
+							allowHalfOpen: false,
+						},
+					);
+					// expose early so the timeout handler can close a hung handshake
+					socket = tcpSocket;
+					const info = await tcpSocket.opened;
+					span.setAttribute('network.peer.address', info.remoteAddress);
+					return tcpSocket;
+				});
+
+				const writer = sock.writable.getWriter();
+				const encoder = new TextEncoder();
+				const rawHTTPReq = [
+					`GET ${url.pathname}${url.search} HTTP/1.1`,
+					`Host: ${url.hostname}`,
+					'Accept: application/json',
+					'Connection: close',
+				];
+				const joined = rawHTTPReq.join('\r\n');
+				const encoded = encoder.encode(`${joined}\r\n\r\n`);
+				await writer.write(encoded);
+				// request line + headers; this GET has no body
+				span.setAttribute('http.request.size', encoded.length);
+
+				const reader = sock.readable.getReader();
+
+				return tracing.enterSpan('tcp.read', async (readSpan) => {
+					// Collect all chunks as Uint8Arrays first, then decode at the end.
+					// This avoids issues with multi-byte UTF-8 characters being split across TCP chunks.
+					const chunks: Uint8Array[] = [];
+					let totalLength = 0;
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) {
+							break;
+						}
+						chunks.push(value);
+						totalLength += value.length;
+					}
+					sock.close();
+					// raw bytes read, including status line + headers
+					readSpan.setAttribute('http.response.size', totalLength);
+
+					// Concatenate all chunks and decode once
+					const combined = new Uint8Array(totalLength);
+					let offset = 0;
+					for (const chunk of chunks) {
+						combined.set(chunk, offset);
+						offset += chunk.length;
+					}
+					return new TextDecoder().decode(combined);
+				});
+			})();
+
+			let result: string;
+			try {
+				result = await Promise.race([requestPromise, timeoutPromise]);
+			} catch (err) {
+				// pass through minecraft errors (including timeout)
+				// @ts-expect-error error not properly typed
+				if (typeof err?.code === 'string' && err.code.startsWith('minecraft.')) {
+					throw err;
+				}
+				// catch socket errors generically (including DOMException with numeric codes)
+				span.setAttribute('error.type', err instanceof Error ? err.name : 'socket_error');
+				console.error(err);
+				throw new errorCode('minecraft.api_failure');
+			} finally {
+				// Clear timeout if request completed successfully
+				if (timeoutId) {
+					clearTimeout(timeoutId);
+				}
+			}
+
+			const parsed = parseResponse(result);
+			span.setAttribute('http.response.status_code', parsed.statusCode);
+			span.setAttribute('http.response.body.size', new TextEncoder().encode(parsed.bodyData).length);
+			if (parsed.statusCode !== 200) {
+				// per OTel semconv, error.type is the status code for error responses
+				span.setAttribute('error.type', String(parsed.statusCode));
+			}
+
+			if (parsed.statusCode === 429) {
+				// rate limited, we're done
+				throw new errorCode('minecraft.rate_limited', { statusCode: 429 });
+			}
+			let body = null;
+			try {
+				body = JSON.parse(parsed.bodyData);
+			} catch {
+				// we tried
+			}
+			if (
+				parsed.statusCode === 404 &&
+				body?.errorMessage?.includes?.('Couldn\'t find any profile with name')
+			) {
+				throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+			}
+
+			if (parsed.statusCode === 204 && !body) {
+				// bad username
+				throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+			}
+
+			if (parsed.statusCode === 400 && body?.error === 'CONSTRAINT_VIOLATION') {
+				// mojang returns 400 with this body if the username is invalid (eg too long)
+				throw new failCode('minecraft.invalid_username', { statusCode: 400 });
+			}
+
+			if (parsed.statusCode !== 200) {
+				// other API failure
+				console.log(
+					'got non-200 response from TCP mojang',
+					parsed.statusCode,
+					body,
+				);
+				throw new errorCode('minecraft.api_failure');
+			}
+
+			const contentType = parsed.headers['content-type'];
+			if (!contentType || !contentType.includes('json')) {
+				throw new errorCode('minecraft.non_json', {
+					contentType: contentType || null,
+				});
+			}
+			body.request_type = 'tcp';
+			return body;
+		});
 	},
 	// hit mojang api
 	async request(
@@ -535,5 +571,8 @@ const lookup = async function lookup(
 
 	return honoCtx.json(responseFull, 200, responseHeaders);
 };
+
+// exported for tests
+export { helpers };
 
 export default lookup;
