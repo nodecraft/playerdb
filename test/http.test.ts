@@ -132,6 +132,19 @@ describe('parseResponse', () => {
 		expect(parsed.bodyData).toBe('');
 	});
 
+	it('parses 204 No Content without body framing headers', () => {
+		const response = [
+			'HTTP/1.1 204 No Content',
+			'Cache-Control: max-age=20',
+			'',
+			'',
+		].join('\r\n');
+
+		const parsed = parseResponse(response);
+		expect(parsed.statusCode).toBe(204);
+		expect(parsed.bodyData).toBe('');
+	});
+
 	it('handles case-insensitive Transfer-Encoding header', () => {
 		const response = [
 			'HTTP/1.1 200 OK',

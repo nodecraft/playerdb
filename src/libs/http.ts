@@ -110,6 +110,9 @@ export function parseResponse(data: string) {
 			);
 		}
 		bodyData = rawBodyData;
+	} else if (statusCode === 204 && rawBodyData === '') {
+		// A 204 response cannot contain a message body, so framing headers are optional.
+		bodyData = '';
 	} else {
 		throw new Error('Unable to determine body length (no Content-Length or Transfer-Encoding: chunked)');
 	}
