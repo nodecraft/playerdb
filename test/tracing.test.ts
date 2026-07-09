@@ -145,4 +145,16 @@ describe('minecraft tcpRequest tracing', () => {
 		expect(statusCode).not.toBe(200);
 		expect(mainSpan?.attributes['error.type']).toBe(String(statusCode));
 	});
+
+	it('classifies a bodyless 204 profile response as an invalid username', async () => {
+		const spans = captureSpans();
+		await expect(minecraftHelpers.tcpRequest({
+			host: 'https://sessionserver.mojang.com/',
+			path: 'session/minecraft/profile/00000000000000000000000000000000?unsigned=false',
+		})).rejects.toMatchObject({ code: 'minecraft.invalid_username' });
+
+		const mainSpan = spans.find(span => span.name === 'mojang.tcpRequest');
+		expect(mainSpan?.attributes['http.response.status_code']).toBe(204);
+		expect(mainSpan?.attributes['error.type']).toBe('204');
+	});
 });
