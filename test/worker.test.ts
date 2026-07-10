@@ -176,6 +176,74 @@ describe('minecraft api', () => {
 		expect(json.code).toEqual('minecraft.invalid_username');
 	});
 
+	it('negatively caches unknown player lookups in KV', async () => {
+		const name = `nope-${crypto.randomUUID().slice(0, 8)}`;
+		const request = new IncomingRequest(
+			`http://localhost/api/player/minecraft/${name}`,
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(400);
+		expect(json.code).toEqual('minecraft.invalid_username');
+		const sentinel = await env.PLAYERDB_CACHE.get(`minecraft-username-${name}`, { type: 'json' });
+		expect(sentinel).toEqual({ __invalid: true });
+	});
+
+	it('serves invalid username from the negative cache', async () => {
+		const name = `seeded-${crypto.randomUUID().slice(0, 8)}`;
+		await env.PLAYERDB_CACHE.put(
+			`minecraft-username-${name}`,
+			JSON.stringify({ __invalid: true }),
+			{ expirationTtl: 3600 },
+		);
+		const request = new IncomingRequest(
+			`http://localhost/api/player/minecraft/${name}`,
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(400);
+		expect(json.success).toBe(false);
+		expect(json.code).toEqual('minecraft.invalid_username');
+	});
+
+	it('negatively caches unknown uuid lookups in KV', async () => {
+		const uuid = crypto.randomUUID().replaceAll('-', '');
+		const request = new IncomingRequest(
+			`http://localhost/api/player/minecraft/${uuid}`,
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(400);
+		expect(json.code).toEqual('minecraft.invalid_username');
+		const sentinel = await env.PLAYERDB_CACHE.get(`minecraft-profile-${uuid}`, { type: 'json' });
+		expect(sentinel).toEqual({ __invalid: true });
+	});
+
+	it('serves unknown uuid from the negative cache', async () => {
+		const uuid = crypto.randomUUID().replaceAll('-', '');
+		await env.PLAYERDB_CACHE.put(
+			`minecraft-profile-${uuid}`,
+			JSON.stringify({ __invalid: true }),
+			{ expirationTtl: 3600 },
+		);
+		const request = new IncomingRequest(
+			`http://localhost/api/player/minecraft/${uuid}`,
+		);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		const json = await response.json<any>();
+		expect(response.status).toBe(400);
+		expect(json.success).toBe(false);
+		expect(json.code).toEqual('minecraft.invalid_username');
+	});
+
 	it('responds with 400 for invalid username', async () => {
 		const request = new IncomingRequest(
 			'http://localhost/api/player/minecraft/cherryjimbo@example.com',
