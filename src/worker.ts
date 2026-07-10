@@ -276,6 +276,8 @@ app.onError((err, ctx) => {
 		type,
 		// @ts-expect-error errors aren't properly typed
 		error: err.analyticsCode || err.code || 'unknown',
+		// errors served from the KV negative cache mark themselves as cached
+		cached: Boolean('cached' in err && err.cached),
 		status,
 	});
 

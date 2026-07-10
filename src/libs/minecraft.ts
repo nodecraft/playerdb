@@ -18,6 +18,11 @@ const flyProxy = 'https://playerdb.fly.dev/';
 const oneDay = 60 * 60 * 24;
 const cacheTtl = oneDay * 7; // 7 days
 const responseCacheTtl = oneDay * 5; // 5 days
+const invalidTtl = 60 * 60; // invalid names can become valid when registered, so keep the negative cache short
+const invalidSentinel = { __invalid: true };
+// KV edge-caches negative lookups for the full cacheTtl, so a long read TTL would hide
+// freshly written entries (incl. invalid sentinels) from colos that already saw a miss
+const kvReadCacheTtl = 300;
 
 const responseHeaders = {
 	'content-type': 'application/json; charset=utf-8',
@@ -370,6 +375,22 @@ const helpers = {
 		// take a mojang UUID in format `ef6134805b6244e4a4467fbe85d65513` and return `ef613480-5b62-44e4-a446-7fbe85d65513`
 		return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
 	},
+	invalidUsernameError(cached: boolean) {
+		const err = new failCode('minecraft.invalid_username', { statusCode: 400 });
+		// instance prop rather than `data` so it feeds analytics without leaking into the response body
+		(err as failCode & { cached?: boolean; }).cached = cached;
+		return err;
+	},
+	// negative cache definitive invalid results so repeat lookups skip Mojang entirely
+	cacheIfInvalid(err: unknown, kvKey: string, env: Environment, ctx: ExecutionContext) {
+		if ((err as { code?: string; })?.code === 'minecraft.invalid_username') {
+			ctx.waitUntil(
+				env.PLAYERDB_CACHE.put(kvKey, JSON.stringify(invalidSentinel), {
+					expirationTtl: invalidTtl,
+				}),
+			);
+		}
+	},
 };
 
 const mojangLib = {
@@ -385,13 +406,16 @@ const mojangLib = {
 			if (env.BYPASS_CACHE !== 'true') {
 				results = await env.PLAYERDB_CACHE.get(kvKey, {
 					type: 'json',
-					cacheTtl: oneDay,
+					cacheTtl: kvReadCacheTtl,
 				});
 			}
 		} catch {
 			// nothing in KV
 		}
 		if (results) {
+			if ((results as Record<string, unknown>).__invalid) {
+				throw helpers.invalidUsernameError(true);
+			}
 			// Add cache hit metadata for monitoring
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			(results as any).cached_at = (results as any).cached_at || Date.now();
@@ -402,34 +426,39 @@ const mojangLib = {
 			date = Date.now();
 		}
 		try {
-			// try over TCP first
-			results = await helpers.tcpRequest({
-				host: apiServices,
-				path: 'minecraft/profile/lookup/name/' + username,
-				qs: {
-					date: String(date),
-				},
-			});
-		} catch (err) {
-			// @ts-expect-error error not properly typed
-			if (err?.code === 'minecraft.invalid_username') {
-				throw err;
-			}
-			console.warn('TCP failed, falling back to HTTP', err);
-			results = await helpers.request(
-				{
+			try {
+				// try over TCP first
+				results = await helpers.tcpRequest({
 					host: apiServices,
 					path: 'minecraft/profile/lookup/name/' + username,
 					qs: {
 						date: String(date),
 					},
-				},
-				{
-					username: username,
-					date: date,
-				},
-				env,
-			);
+				});
+			} catch (err) {
+				// @ts-expect-error error not properly typed
+				if (err?.code === 'minecraft.invalid_username') {
+					throw err;
+				}
+				console.warn('TCP failed, falling back to HTTP', err);
+				results = await helpers.request(
+					{
+						host: apiServices,
+						path: 'minecraft/profile/lookup/name/' + username,
+						qs: {
+							date: String(date),
+						},
+					},
+					{
+						username: username,
+						date: date,
+					},
+					env,
+				);
+			}
+		} catch (err) {
+			helpers.cacheIfInvalid(err, kvKey, env, ctx);
+			throw err;
 		}
 
 		// now we have their ID we can do a UUID lookup
@@ -452,39 +481,47 @@ const mojangLib = {
 			if (env.BYPASS_CACHE !== 'true') {
 				results = await env.PLAYERDB_CACHE.get(kvKey, {
 					type: 'json',
-					cacheTtl: oneDay,
+					cacheTtl: kvReadCacheTtl,
 				});
 			}
 		} catch {
 			// nothing in KV
 		}
 		if (results) {
+			if ((results as Record<string, unknown>).__invalid) {
+				throw helpers.invalidUsernameError(true);
+			}
 			return results;
 		}
 		const lookup = String(uuid).replaceAll('-', '');
 		try {
-			// try over TCP first
-			results = await helpers.tcpRequest({
-				host: apiSessions,
-				path: `session/minecraft/profile/${lookup}?unsigned=false`,
-			});
-		} catch (err) {
-			// no need to try and fallback to HTTP if we got this error
-			// @ts-expect-error error not properly typed
-			if (err?.code === 'minecraft.invalid_username') {
-				throw err;
-			}
-			console.warn('TCP failed, falling back to HTTP', err);
-			results = await helpers.request(
-				{
+			try {
+				// try over TCP first
+				results = await helpers.tcpRequest({
 					host: apiSessions,
 					path: `session/minecraft/profile/${lookup}?unsigned=false`,
-				},
-				{
-					id: lookup,
-				},
-				env,
-			);
+				});
+			} catch (err) {
+				// no need to try and fallback to HTTP if we got this error
+				// @ts-expect-error error not properly typed
+				if (err?.code === 'minecraft.invalid_username') {
+					throw err;
+				}
+				console.warn('TCP failed, falling back to HTTP', err);
+				results = await helpers.request(
+					{
+						host: apiSessions,
+						path: `session/minecraft/profile/${lookup}?unsigned=false`,
+					},
+					{
+						id: lookup,
+					},
+					env,
+				);
+			}
+		} catch (err) {
+			helpers.cacheIfInvalid(err, kvKey, env, ctx);
+			throw err;
 		}
 		results.formatted_id = helpers.formatId(results.id);
 		results.cached_at = Date.now();
