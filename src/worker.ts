@@ -207,7 +207,7 @@ app.use('/api/*', async (ctx, next) => {
 			error: 'api.rate_limited',
 			status: 429,
 		});
-		return ctx.json(responseData, 429, { ...apiHeader, 'Retry-After': '10' });
+		return ctx.json(responseData, 429, { ...apiHeader, 'Retry-After': '10', 'Cache-Control': 'no-store' });
 	}
 
 	await next();
