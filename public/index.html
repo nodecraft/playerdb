@@ -41,6 +41,10 @@
 				text-align: left;
 			}
 
+			.wrap a {
+				color: #8004cf;
+			}
+
 			code.highlight {
 				display: block;
 				background: #e5e4e7;
@@ -102,6 +106,10 @@
 				}
 
 				code strong {
+					color: #e265f3;
+				}
+
+				.wrap a {
 					color: #e265f3;
 				}
 			}
@@ -193,10 +201,24 @@
 				</ul>
 				<h2>Other Information</h2>
 				<p>
-					The API has no rate limits in place, but we ask that you please
-					include an identifying <code>user-agent</code> header in any requests
-					that you make to the API, so we can contact you if necessary about
-					your usage.
+					Very generous rate limits are in place, and normal usage should
+					never come close to hitting them. If you have a reasonable use-case
+					that needs more, reach out to
+					<a
+						href="https://x.com/cherryjimbo"
+						target="_blank"
+						rel="noopener"
+						>@cherryjimbo</a
+					>
+					and we'll be happy to help. If you do get rate limited, the API
+					responds with a <code>429</code> status and a
+					<code>Retry-After</code> header indicating how long to wait before
+					retrying.
+				</p>
+				<p>
+					We also ask that you please include an identifying
+					<code>user-agent</code> header in any requests that you make to the
+					API, so we can contact you if necessary about your usage.
 				</p>
 			</div>
 		</main>

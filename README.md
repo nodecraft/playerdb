@@ -5,6 +5,8 @@ It runs on any of Cloudflare's hundreds of datacenters worldwide with minimal la
 
 For most users, you will simply want to use the [API](https://playerdb.co) and not run this or deploy this repository yourself. Please ensure when using the API that you specify a reasonable `User-Agent` header.
 
+Very generous rate limits are in place that normal usage should never come close to hitting. If you get rate limited, the API responds with a `429` status and a `Retry-After` header indicating how long to wait before retrying. If you have a reasonable use-case that needs more, reach out to [@cherryjimbo](https://x.com/cherryjimbo) and we'll be happy to help.
+
 ## Development
 
 Create a `.dev.vars` file containing the following:
