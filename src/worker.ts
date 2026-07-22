@@ -190,6 +190,26 @@ app.use('/api/*', async (ctx, next) => {
 	// Store type for use in error handler
 	ctx.set('type', type);
 
+	// Rate limit only cache misses: 10rps per IP + user agent. Return the 429
+	// directly rather than throwing, since onError caches error responses at the
+	// edge keyed by URL — a cached 429 would block every client on that URL.
+	const ip = ctx.req.header('CF-Connecting-IP') || 'unknown';
+	const userAgent = ctx.req.header('User-Agent') || 'unknown';
+	const { success } = await ctx.env.PLAYERDB_RATE_LIMIT.limit({ key: `${ip}:${userAgent}` });
+	if (!success) {
+		const responseData = {
+			...helpers.code('api.rate_limited'),
+			success: false,
+			error: false,
+		};
+		writeDataPoint(ctx, {
+			type,
+			error: 'api.rate_limited',
+			status: 429,
+		});
+		return ctx.json(responseData, 429, { ...apiHeader, 'Retry-After': '10' });
+	}
+
 	await next();
 
 	// Cache the response after handler completes

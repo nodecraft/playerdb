@@ -10,6 +10,7 @@ export interface Environment {
 	PLAYERDB_ANALYTICS?: AnalyticsEngineDataset;
 	HYTALE_TOKEN_MANAGER: DurableObjectNamespace<HytaleTokenManager>;
 	HYTALE_PROXY: DurableObjectNamespace<HytaleProxyContainer>;
+	PLAYERDB_RATE_LIMIT: RateLimit;
 
 	XBOX_APIKEY: string;
 	STEAM_APIKEY: string;
