@@ -195,7 +195,7 @@ app.use('/api/*', async (ctx, next) => {
 	const internalRequest = (ctx.req.raw.cf as { playerdbInternal?: boolean; } | undefined)?.playerdbInternal === true;
 
 	if (!internalRequest) {
-		// Rate limit only cache misses: 10rps per IP + user agent. Return the 429
+		// Rate limit only cache misses: 7.5rps per IP + user agent. Return the 429
 		// directly rather than throwing, since onError caches error responses at the
 		// edge keyed by URL — a cached 429 would block every client on that URL.
 		const ip = ctx.req.header('CF-Connecting-IP') || 'unknown';
