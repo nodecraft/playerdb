@@ -102,21 +102,22 @@ describe('xbox throughput hardening', () => {
 		expect(json.data.player.username).toBe('Space Man A');
 	});
 
-	it('reports an upstream non-JSON throttle page as an uncached 429', async () => {
+	it('reports an upstream HTML error page as an uncached 429 with only a brief pause', async () => {
 		routes.push({
 			match: url => url.includes('gt=HtmlThrottled'),
 			reply: () => new Response('<html>rate limited</html>', {
 				status: 200,
-				headers: { 'content-type': 'text/html' },
+				headers: { 'content-type': 'text/html', 'x-ratelimit-remaining': '450' },
 			}),
 		});
 
 		const { response, text } = await call('/api/player/xbox/HtmlThrottled');
 
 		expect(response.status).toBe(429);
-		expect(response.headers.get('Retry-After')).toBe('900');
+		expect(response.headers.get('Retry-After')).toBe('60');
 		expect(response.headers.get('Cache-Control')).toBe('no-store');
 		expect(JSON.parse(text).code).toBe('xbox.rate_limited');
+		expect(Number(await env.PLAYERDB_CACHE.get(quotaKey))).toBeLessThanOrEqual(Date.now() + 60000);
 	});
 
 	it('trips the shared gate when upstream reports the quota spent', async () => {
@@ -191,6 +192,19 @@ describe('xbox throughput hardening', () => {
 		expect(response.status).toBe(429);
 		expect(response.headers.get('Retry-After')).toBe('2726');
 		expect(await env.PLAYERDB_CACHE.get(quotaKey)).not.toBeNull();
+	});
+
+	it('only pauses briefly when upstream is throttled by Microsoft with quota to spare', async () => {
+		routes.push({
+			match: url => url.includes('gt=UpstreamBusy'),
+			reply: () => quotaJson({ code: 429, content: { description: 'throttled' } }, 450),
+		});
+
+		const { response } = await call('/api/player/xbox/UpstreamBusy');
+
+		expect(response.status).toBe(429);
+		expect(response.headers.get('Retry-After')).toBe('60');
+		expect(Number(await env.PLAYERDB_CACHE.get(quotaKey))).toBeLessThanOrEqual(Date.now() + 60000);
 	});
 
 	it('ignores the quota reported by an edge cache hit', async () => {

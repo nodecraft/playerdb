@@ -31,6 +31,9 @@ const quotaReserve = 2; // stop short of the hard 429 so concurrent requests don
 const quotaBlockTtl = 900; // fallback window when upstream gives no reset hint
 const quotaMaxBlockTtl = 60 * 60; // quota resets hourly, so never sit blocked longer than that
 const quotaMinBlockTtl = 60; // KV rejects a shorter expirationTtl
+// xbl.io also fails per-request when Microsoft throttles its own pool or it serves an HTML
+// error page. Those say nothing about our quota, so only pause briefly to avoid a stampede.
+const transientBlockTtl = quotaMinBlockTtl;
 const quotaProbeRate = 0.01; // share of blocked requests allowed upstream to detect recovery
 
 const responseHeaders = {
@@ -179,10 +182,8 @@ const helpers = {
 
 		const contentType = response.headers.get('content-type');
 		if (!contentType || !contentType.includes('json')) {
-			// xbl.io serves an HTML page when it throttles us, so back off instead of
-			// reporting a 500 the caller has no way to act on.
-			blockUpstream(honoCtx);
-			throw throttled('xbox.non_json', quotaBlockTtl);
+			blockUpstream(honoCtx, transientBlockTtl);
+			throw throttled('xbox.non_json', transientBlockTtl);
 		}
 		let text = '';
 		let body = null;
@@ -208,8 +209,8 @@ const helpers = {
 
 		if (body.code === 429) {
 			// upstream api is rate limited contacting the xbox live services
-			blockUpstream(honoCtx);
-			throw throttled('xbox.rate_limited', quotaBlockTtl);
+			blockUpstream(honoCtx, transientBlockTtl);
+			throw throttled('xbox.upstream_throttled', transientBlockTtl);
 		}
 
 		if (body.code !== 200) {
