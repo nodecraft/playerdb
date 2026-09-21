@@ -14,6 +14,7 @@ import worker from '../src/worker';
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 const quotaKey = 'xbox-quota-exhausted';
 const realFetch = globalThis.fetch;
+const realRandom = Math.random;
 
 type Route = { match: (url: string) => boolean; reply: () => Response; };
 
@@ -72,9 +73,12 @@ describe('xbox throughput hardening', () => {
 	beforeEach(async () => {
 		routes = [];
 		upstreamCalls = [];
+		// pin the recovery probe off so gate assertions don't flake on its 1% roll
+		Math.random = () => 1;
 		await env.PLAYERDB_CACHE.delete(quotaKey);
 	});
 	afterEach(async () => {
+		Math.random = realRandom;
 		await env.PLAYERDB_CACHE.delete(quotaKey);
 	});
 
@@ -110,7 +114,7 @@ describe('xbox throughput hardening', () => {
 		const { response, text } = await call('/api/player/xbox/HtmlThrottled');
 
 		expect(response.status).toBe(429);
-		expect(response.headers.get('Retry-After')).toBe('60');
+		expect(response.headers.get('Retry-After')).toBe('900');
 		expect(response.headers.get('Cache-Control')).toBe('no-store');
 		expect(JSON.parse(text).code).toBe('xbox.rate_limited');
 	});
@@ -128,7 +132,7 @@ describe('xbox throughput hardening', () => {
 	});
 
 	it('refuses to spend upstream calls while the gate is closed', async () => {
-		await env.PLAYERDB_CACHE.put(quotaKey, String(Date.now()), { expirationTtl: 900 });
+		await env.PLAYERDB_CACHE.put(quotaKey, String(Date.now() + 900000), { expirationTtl: 900 });
 		routes.push({
 			match: url => url.includes('gt=GatedOff'),
 			reply: () => quotaJson(profileBody('GatedOff'), 100),
@@ -137,8 +141,72 @@ describe('xbox throughput hardening', () => {
 		const { response } = await call('/api/player/xbox/GatedOff');
 
 		expect(response.status).toBe(429);
-		// the 1% probe can leak a single call, but the gate must not pass traffic through
-		expect(upstreamCalls.length).toBeLessThanOrEqual(1);
+		expect(response.headers.get('Retry-After')).toBe('900');
+		expect(upstreamCalls).toHaveLength(0);
+	});
+
+	it('keeps the gate closed when a probe finds the quota still spent', async () => {
+		await env.PLAYERDB_CACHE.put(quotaKey, String(Date.now() + 900000), { expirationTtl: 900 });
+		Math.random = () => 0; // force the recovery probe through
+		routes.push({
+			match: url => url.includes('gt=StillSpent'),
+			reply: () => quotaJson(profileBody('StillSpent'), 0),
+		});
+
+		const { response } = await call('/api/player/xbox/StillSpent');
+
+		expect(response.status).toBe(200);
+		expect(upstreamCalls).toHaveLength(1);
+		expect(await env.PLAYERDB_CACHE.get(quotaKey)).not.toBeNull();
+	});
+
+	it('reopens the gate when a probe finds the quota recovered', async () => {
+		await env.PLAYERDB_CACHE.put(quotaKey, String(Date.now() + 900000), { expirationTtl: 900 });
+		Math.random = () => 0; // force the recovery probe through
+		routes.push({
+			match: url => url.includes('gt=Recovered'),
+			reply: () => quotaJson(profileBody('Recovered'), 120),
+		});
+
+		const { response } = await call('/api/player/xbox/Recovered');
+
+		expect(response.status).toBe(200);
+		expect(await env.PLAYERDB_CACHE.get(quotaKey)).toBeNull();
+	});
+
+	it('backs off for the window upstream reports on a hard 429', async () => {
+		routes.push({
+			match: url => url.includes('gt=HardLimit'),
+			reply: () => new Response(
+				JSON.stringify({ code: 'RATE_LIMIT_EXCEEDED', limit: 500, spent: 500, retryAfter: 2726 }),
+				{
+					status: 429,
+					headers: { 'content-type': 'application/json;charset=utf-8', 'x-ratelimit-remaining': '0' },
+				},
+			),
+		});
+
+		const { response } = await call('/api/player/xbox/HardLimit');
+
+		expect(response.status).toBe(429);
+		expect(response.headers.get('Retry-After')).toBe('2726');
+		expect(await env.PLAYERDB_CACHE.get(quotaKey)).not.toBeNull();
+	});
+
+	it('ignores the quota reported by an edge cache hit', async () => {
+		routes.push({
+			match: url => url.includes('gt=CacheReplay'),
+			reply: () => {
+				const response = quotaJson(profileBody('CacheReplay'), 0);
+				response.headers.set('cf-cache-status', 'HIT');
+				return response;
+			},
+		});
+
+		const { response } = await call('/api/player/xbox/CacheReplay');
+
+		expect(response.status).toBe(200);
+		expect(await env.PLAYERDB_CACHE.get(quotaKey)).toBeNull();
 	});
 
 	it('serves a stale profile instead of failing while the gate is closed', async () => {
@@ -147,7 +215,7 @@ describe('xbox throughput hardening', () => {
 			'xbox-profile-staleguy',
 			JSON.stringify({ id: '2533274800000009', username: 'StaleGuy', cached_at: eightDaysAgo }),
 		);
-		await env.PLAYERDB_CACHE.put(quotaKey, String(Date.now()), { expirationTtl: 900 });
+		await env.PLAYERDB_CACHE.put(quotaKey, String(Date.now() + 900000), { expirationTtl: 900 });
 
 		const { response, text } = await call('/api/player/xbox/StaleGuy');
 
@@ -175,6 +243,24 @@ describe('xbox throughput hardening', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('X-Playerdb-Stale')).toBe('true');
 		expect(JSON.parse(text).data.player.username).toBe('BrokenUp');
+	});
+
+	it('serves a stale profile when upstream returns a 200 carrying no profile', async () => {
+		const eightDaysAgo = Date.now() - (8 * 24 * 60 * 60 * 1000);
+		await env.PLAYERDB_CACHE.put(
+			'xbox-profile-emptybody',
+			JSON.stringify({ id: '2533274800000012', username: 'EmptyBody', cached_at: eightDaysAgo }),
+		);
+		routes.push({
+			match: url => url.includes('gt=EmptyBody'),
+			reply: () => quotaJson({ code: 200, content: { profileUsers: [] } }, 120),
+		});
+
+		const { response, text } = await call('/api/player/xbox/EmptyBody');
+
+		expect(response.status).toBe(200);
+		expect(response.headers.get('X-Playerdb-Stale')).toBe('true');
+		expect(JSON.parse(text).data.player.username).toBe('EmptyBody');
 	});
 
 	it('serves a fresh cached profile without touching upstream', async () => {

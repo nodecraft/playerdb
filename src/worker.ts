@@ -316,7 +316,9 @@ app.onError((err, ctx) => {
 		errorHeaders['Cache-Control'] = 'no-store';
 	}
 	if (status === 429) {
-		errorHeaders['Retry-After'] = '60';
+		// errors carrying their own backoff know how long the block actually lasts
+		const retryAfter = 'retryAfter' in err && typeof err.retryAfter === 'number' ? err.retryAfter : 60;
+		errorHeaders['Retry-After'] = String(retryAfter);
 	}
 
 	const errorResponse = ctx.json(responseData, status, errorHeaders);

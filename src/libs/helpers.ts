@@ -26,6 +26,8 @@ class failCode extends Error {
 	analyticsCode?: string;
 	// set when the error was replayed from a negative cache rather than fetched
 	cached?: boolean;
+	// seconds to advertise in Retry-After when the caller should back off for longer than the default
+	retryAfter?: number;
 	constructor(codeStr: keyof typeof codes, data: ErrorData = {}) {
 		const codeData = code(codeStr, data);
 		super(codeData.message ?? codeStr);
@@ -49,6 +51,7 @@ class errorCode extends Error {
 	statusCode?: ContentfulStatusCode;
 	analyticsCode?: string;
 	cached?: boolean;
+	retryAfter?: number;
 	constructor(codeStr: keyof typeof codes, data: ErrorData = {}) {
 		const codeData = code(codeStr, data);
 		super(codeData.message ?? codeStr);

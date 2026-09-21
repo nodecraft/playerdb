@@ -7,7 +7,7 @@ For most users, you will simply want to use the [API](https://playerdb.co) and n
 
 Very generous rate limits are in place that normal usage should never come close to hitting. If you get rate limited, the API responds with a `429` status and a `Retry-After` header indicating how long to wait before retrying. If you have a reasonable use-case that needs more, reach out to [@cherryjimbo](https://x.com/cherryjimbo) and we'll be happy to help.
 
-Xbox lookups are additionally bound by the upstream Xbox Live provider's hourly quota. When that quota is spent, PlayerDB serves the last known profile with an `X-Playerdb-Stale: true` header where one is cached, and otherwise responds `429` with a `Retry-After` header. Transient `429` and `5xx` responses are never cached, so a retry always reaches a fresh result.
+Xbox lookups are additionally bound by the upstream Xbox Live provider's hourly quota. When that quota is spent, PlayerDB serves the last known profile with an `X-Playerdb-Stale: true` header where one is cached, and otherwise responds `429` with a `Retry-After` header reflecting the provider's own reset window. Transient `429` and `5xx` responses are never cached, so a retry always reaches a fresh result.
 
 ## Development
 
