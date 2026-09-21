@@ -32,5 +32,7 @@ export type HonoEnv = {
 		type: string;
 		lookupQuery: string;
 		url: URL;
+		// last quota figure reported by xbl.io, recorded so the dashboard can show headroom
+		xboxQuotaRemaining?: number;
 	};
 };

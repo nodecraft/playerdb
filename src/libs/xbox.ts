@@ -13,10 +13,25 @@ import type { Context } from 'hono';
 const apiUrl = 'https://xbl.io/';
 const apiVersion = '/api/v2/';
 const oneDay = 60 * 60 * 24;
-const kvCacheTtl = oneDay * 7; // 7 days for KV
+const kvCacheTtl = oneDay * 30; // keep profiles past freshness so they can be served stale while quota is spent
+const freshTtl = oneDay * 7; // profiles younger than this are served without touching upstream
 const cacheTtl = oneDay * 5; // 5 days for edge/response
-const notFoundTtl = 60 * 60; // 1 hour for negative cache
+const staleTtl = 60; // short edge TTL on stale hits so clients recheck once quota recovers
+const notFoundTtl = oneDay; // most misses are permanent, and scrapers re-query them relentlessly
 const notFoundSentinel = { __not_found: true };
+// KV caches reads per colo and a later write stays invisible for this long, so it has to
+// stay well under freshTtl: otherwise a refreshed profile still reads as stale and every
+// request re-fetches upstream until the colo cache expires.
+const kvReadCacheTtl = 300;
+
+// xbl.io reports quota on every response via x-ratelimit-*. Once it is spent every
+// further call is burned for nothing, so the exhaustion is shared globally via KV.
+const quotaKey = 'xbox-quota-exhausted';
+const quotaReserve = 2; // stop short of the hard 429 so concurrent requests don't trip it
+const quotaBlockTtl = 900; // fallback window when upstream gives no reset hint
+const quotaMaxBlockTtl = 60 * 60; // quota resets hourly, so never sit blocked longer than that
+const quotaMinBlockTtl = 60; // KV rejects a shorter expirationTtl
+const quotaProbeRate = 0.01; // share of blocked requests allowed upstream to detect recovery
 
 const responseHeaders = {
 	'content-type': 'application/json; charset=utf-8',
@@ -25,13 +40,97 @@ const responseHeaders = {
 	'Cache-Control': `public, max-age=${cacheTtl}`,
 } as const;
 
+// stale hits are deliberately short-lived at the edge so a recovered quota is picked up quickly
+const staleResponseHeaders = {
+	...responseHeaders,
+	'Cache-Control': `public, max-age=${staleTtl}`,
+	'X-Playerdb-Stale': 'true',
+} as const;
+
 type RequestData = {
 	path: string;
 	headers?: Record<string, string>;
 	qs?: Record<string, string>;
 };
+// Surfaces upstream throttling as a 429 the caller can back off on, while keeping
+// the specific cause distinguishable in analytics. A failCode rather than an errorCode
+// so throttling reports `error: false`, matching the API's own rate limit response.
+function throttled(analyticsCode: string, retryAfter?: number) {
+	const err = new failCode('xbox.rate_limited', { statusCode: 429 });
+	err.analyticsCode = analyticsCode;
+	err.retryAfter = retryAfter;
+	return err;
+}
+
+function readQuota(headers: Headers) {
+	// `Number(null)` is 0, so the header has to be checked before it is parsed
+	const header = headers.get('x-ratelimit-remaining');
+	if (header === null) {
+		return null;
+	}
+	const remaining = Number(header);
+	if (!Number.isFinite(remaining)) {
+		return null;
+	}
+	return remaining;
+}
+
+// xbl.io reports the exact reset window in its 429 body, so back off for precisely
+// that long rather than guessing and reopening into another wall of 429s.
+async function readRetryAfter(response: Response) {
+	try {
+		const body = await response.json<{ retryAfter?: unknown; }>();
+		const retryAfter = Number(body?.retryAfter);
+		if (Number.isFinite(retryAfter) && retryAfter > 0) {
+			return Math.min(Math.max(retryAfter, quotaMinBlockTtl), quotaMaxBlockTtl);
+		}
+	} catch {
+		// no usable hint in the body, fall back to the default window
+	}
+	return quotaBlockTtl;
+}
+
+// the stored value is when the block lifts, so callers can be told how long to wait
+function blockUpstream(honoCtx: Context<HonoEnv>, ttl = quotaBlockTtl) {
+	honoCtx.executionCtx.waitUntil(
+		honoCtx.env.PLAYERDB_CACHE.put(quotaKey, String(Date.now() + (ttl * 1000)), {
+			expirationTtl: ttl,
+		}).catch(() => {
+			// best effort; upstream still enforces its own limit
+		}),
+	);
+}
+
+type QuotaGate = { blocked: boolean; probe: boolean; retryAfter: number; };
+
+async function checkQuota(honoCtx: Context<HonoEnv>): Promise<QuotaGate> {
+	const open = { blocked: false, probe: false, retryAfter: 0 };
+	if (honoCtx.env.BYPASS_CACHE === 'true') {
+		return open;
+	}
+	let resetAt = null;
+	try {
+		resetAt = await honoCtx.env.PLAYERDB_CACHE.get(quotaKey, { cacheTtl: 60 });
+	} catch {
+		// an unreadable gate is treated as open
+	}
+	if (resetAt === null) {
+		return open;
+	}
+	// let a trickle through so recovery is detected without a thundering herd
+	if (Math.random() < quotaProbeRate) {
+		return { blocked: false, probe: true, retryAfter: 0 };
+	}
+	const remaining = Math.ceil((Number(resetAt) - Date.now()) / 1000);
+	return {
+		blocked: true,
+		probe: false,
+		retryAfter: Number.isFinite(remaining) && remaining > 0 ? remaining : quotaBlockTtl,
+	};
+}
+
 const helpers = {
-	async request(data: RequestData) {
+	async request(data: RequestData, honoCtx: Context<HonoEnv>) {
 		// defaults, with `data` merged in
 		const payload = {
 			method: 'GET',
@@ -59,15 +158,31 @@ const helpers = {
 			throw new errorCode('xbox.api_failure');
 		}
 
+		// Failures burn quota too, so record it before any error path returns. A response
+		// replayed from the edge cache burns nothing, and its headers can be days old, so
+		// its quota figure must not arm the gate.
+		const quota = response.headers.get('cf-cache-status') === 'HIT' ? null : readQuota(response.headers);
+		if (quota !== null) {
+			honoCtx.set('xboxQuotaRemaining', quota);
+		}
+
 		if (response.status === 429) {
-			throw new errorCode('xbox.rate_limited', { statusCode: 429 });
+			const retryAfter = await readRetryAfter(response);
+			blockUpstream(honoCtx, retryAfter);
+			throw throttled('xbox.rate_limited', retryAfter);
+		}
+
+		// checked after the 429 so a hard limit blocks for its own reported window
+		if (quota !== null && quota <= quotaReserve) {
+			blockUpstream(honoCtx);
 		}
 
 		const contentType = response.headers.get('content-type');
 		if (!contentType || !contentType.includes('json')) {
-			throw new errorCode('xbox.non_json', {
-				contentType: contentType || null,
-			});
+			// xbl.io serves an HTML page when it throttles us, so back off instead of
+			// reporting a 500 the caller has no way to act on.
+			blockUpstream(honoCtx);
+			throw throttled('xbox.non_json', quotaBlockTtl);
 		}
 		let text = '';
 		let body = null;
@@ -93,7 +208,8 @@ const helpers = {
 
 		if (body.code === 429) {
 			// upstream api is rate limited contacting the xbox live services
-			throw new errorCode('xbox.rate_limited', { statusCode: 429 });
+			blockUpstream(honoCtx);
+			throw throttled('xbox.rate_limited', quotaBlockTtl);
 		}
 
 		if (body.code !== 200) {
@@ -112,12 +228,13 @@ const helpers = {
 		return body;
 	},
 	parse(data: Record<string, any>) {
-		let raw: Record<string, any> = {};
-		let player: Record<string, any> = {};
-		if (data?.content?.profileUsers?.[0]) {
-			raw = data.content.profileUsers[0];
-			player = { id: raw.id, meta: {} };
+		const raw: Record<string, any> | undefined = data?.content?.profileUsers?.[0];
+		if (!raw) {
+			// a 200 carrying no profile is an upstream glitch, not a confirmed miss, so
+			// don't let it poison the negative cache
+			throw new errorCode('xbox.bad_response');
 		}
+		const player: Record<string, any> = { id: raw.id, meta: {} };
 
 		// Process settings efficiently
 		for (const setting of raw.settings || []) {
@@ -163,28 +280,56 @@ const helpers = {
 	skipFields: new Set<string>(),
 };
 
+type CacheHit = { data: Record<string, unknown>; stale: boolean; };
+
+async function readProfileCache(kvKey: string, env: Environment): Promise<CacheHit | null> {
+	if (env.BYPASS_CACHE === 'true') {
+		return null;
+	}
+	const cached = await env.PLAYERDB_CACHE.get<Record<string, unknown>>(kvKey, {
+		type: 'json',
+		cacheTtl: kvReadCacheTtl,
+	});
+	if (!cached) {
+		return null;
+	}
+	if (cached.__not_found) {
+		const err = new failCode('xbox.not_found');
+		err.cached = true;
+		throw err;
+	}
+	const cachedAt = typeof cached.cached_at === 'number' ? cached.cached_at : 0;
+	return { data: cached, stale: Date.now() - cachedAt > freshTtl * 1000 };
+}
+
+async function searchGamertag(query: string, honoCtx: Context<HonoEnv>) {
+	const headers = { 'X-Authorization': honoCtx.env.XBOX_APIKEY };
+
+	try {
+		return await helpers.request({ path: 'friends/search', qs: { gt: query }, headers }, honoCtx);
+	} catch (err) {
+		// Floodgate substitutes underscores for spaces in Bedrock gamertags, so a miss
+		// on an underscored name is worth one retry with the spaces restored.
+		if (err instanceof failCode && err.code === 'xbox.not_found' && query.includes('_')) {
+			const gt = query.replaceAll('_', ' ');
+			return await helpers.request({ path: 'friends/search', qs: { gt }, headers }, honoCtx);
+		}
+		throw err;
+	}
+}
+
 async function getProfile(
 	query: string,
-	env: Environment,
-	ctx: ExecutionContext,
+	honoCtx: Context<HonoEnv>,
 ): Promise<{ data: Record<string, unknown>; request_type: string; }> {
+	const env = honoCtx.env;
+	const ctx = honoCtx.executionCtx;
 	// Normalize query for cache key
 	const kvKey = 'xbox-profile-' + query.toLowerCase();
 
-	// Check KV cache first
+	let cached: CacheHit | null = null;
 	try {
-		if (env.BYPASS_CACHE !== 'true') {
-			const cached = await env.PLAYERDB_CACHE.get(kvKey, {
-				type: 'json',
-				cacheTtl: oneDay,
-			});
-			if (cached) {
-				if ((cached as Record<string, unknown>).__not_found) {
-					throw new failCode('xbox.not_found');
-				}
-				return { data: cached as Record<string, unknown>, request_type: 'kv_cache' };
-			}
-		}
+		cached = await readProfileCache(kvKey, env);
 	} catch (err) {
 		if (err instanceof failCode) {
 			throw err;
@@ -192,32 +337,37 @@ async function getProfile(
 		// KV lookup failed, continue with API
 	}
 
+	if (cached && !cached.stale) {
+		return { data: cached.data, request_type: 'kv_cache' };
+	}
+
+	// Don't spend a call we already know will fail; stale data beats a 429.
+	const gate = await checkQuota(honoCtx);
+	if (gate.blocked) {
+		if (cached) {
+			return { data: cached.data, request_type: 'kv_stale' };
+		}
+		throw throttled('xbox.quota_exhausted', gate.retryAfter);
+	}
+
 	const isXuid = /^\d{1,16}$/.test(query);
-	let returnData: Record<string, unknown> = {};
 	let data;
+	let returnData: Record<string, unknown>;
 
 	try {
 		if (isXuid) {
 			// lookup by ID
-			returnData.id = query;
 			data = await helpers.request({
 				path: `account/${query}`,
 				headers: {
 					'X-Authorization': env.XBOX_APIKEY,
 				},
-			});
+			}, honoCtx);
 		} else {
-			// lookup by username
-			data = await helpers.request({
-				path: 'friends/search',
-				qs: {
-					gt: query,
-				},
-				headers: {
-					'X-Authorization': env.XBOX_APIKEY,
-				},
-			});
+			data = await searchGamertag(query, honoCtx);
 		}
+		// parsed inside the try so a malformed 200 can fall back to stale data too
+		returnData = helpers.parse(data);
 	} catch (err) {
 		if (err instanceof failCode && err.code === 'xbox.not_found') {
 			// negative cache not-found results to avoid burning rate limit
@@ -226,12 +376,22 @@ async function getProfile(
 					expirationTtl: notFoundTtl,
 				}),
 			);
+		} else if (cached) {
+			// upstream is throttled or broken, so a stale profile beats an error
+			return { data: cached.data, request_type: 'kv_stale' };
 		}
 		throw err;
 	}
 
-	// Parse the response data
-	returnData = { ...helpers.parse(data), ...returnData };
+	// only reopen the gate once a probe has actually seen quota return: the same request
+	// re-closes it when the call succeeded on a still-spent quota
+	if (gate.probe && (honoCtx.get('xboxQuotaRemaining') ?? 0) > quotaReserve) {
+		ctx.waitUntil(env.PLAYERDB_CACHE.delete(quotaKey).catch(() => {}));
+	}
+
+	if (isXuid) {
+		returnData.id = query;
+	}
 	returnData.cached_at = Date.now();
 
 	// Cache the result by original query
@@ -255,16 +415,13 @@ async function getProfile(
 }
 
 const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
-	const env = honoCtx.env;
-	const ctx = honoCtx.executionCtx as ExecutionContext;
-
 	const query = honoCtx.get('lookupQuery');
 
 	if (!query) {
 		throw new failCode('api.404');
 	}
 
-	const { data: returnData, request_type } = await getProfile(query, env, ctx);
+	const { data: returnData, request_type } = await getProfile(query, honoCtx);
 
 	writeDataPoint(honoCtx, {
 		type: 'xbox',
@@ -279,7 +436,8 @@ const lookup = async function lookup(honoCtx: Context<HonoEnv>) {
 	>;
 	responseFull.success = true;
 
-	return honoCtx.json(responseFull, 200, responseHeaders);
+	const headers = request_type === 'kv_stale' ? staleResponseHeaders : responseHeaders;
+	return honoCtx.json(responseFull, 200, headers);
 };
 
 export default lookup;
