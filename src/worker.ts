@@ -307,9 +307,21 @@ app.onError((err, ctx) => {
 		status,
 	});
 
-	const errorResponse = ctx.json(responseData, status, apiHeader);
+	// 429s and 5xx are transient: caching them pins the failure onto the URL and keeps
+	// serving it long after upstream recovers. Only deterministic 4xx are worth caching.
+	const cacheable = status < 500 && status !== 429;
 
-	if (ctx.req.url.includes('/api/')) {
+	const errorHeaders: Record<string, string> = { ...apiHeader };
+	if (!cacheable) {
+		errorHeaders['Cache-Control'] = 'no-store';
+	}
+	if (status === 429) {
+		errorHeaders['Retry-After'] = '60';
+	}
+
+	const errorResponse = ctx.json(responseData, status, errorHeaders);
+
+	if (cacheable && ctx.req.url.includes('/api/')) {
 		const cache = caches.default;
 		// normalize cache key for consistency with middleware
 		const url = ctx.get('url');

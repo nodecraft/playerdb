@@ -22,6 +22,10 @@ class failCode extends Error {
 	code: string;
 	data: Record<string, unknown>;
 	statusCode?: ContentfulStatusCode;
+	// reported to analytics in place of `code`, so one client-facing code can cover several causes
+	analyticsCode?: string;
+	// set when the error was replayed from a negative cache rather than fetched
+	cached?: boolean;
 	constructor(codeStr: keyof typeof codes, data: ErrorData = {}) {
 		const codeData = code(codeStr, data);
 		super(codeData.message ?? codeStr);
@@ -43,6 +47,8 @@ class errorCode extends Error {
 	code: string;
 	data: Record<string, unknown>;
 	statusCode?: ContentfulStatusCode;
+	analyticsCode?: string;
+	cached?: boolean;
 	constructor(codeStr: keyof typeof codes, data: ErrorData = {}) {
 		const codeData = code(codeStr, data);
 		super(codeData.message ?? codeStr);

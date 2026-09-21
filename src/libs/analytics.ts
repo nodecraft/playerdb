@@ -45,6 +45,8 @@ export function writeDataPoint(
 			data.cached ? 1 : 0,
 			responseTime,
 			data.status || 0,
+			// -1 marks "not observed" so a genuinely exhausted quota (0) stays distinguishable
+			ctx.get('xboxQuotaRemaining') ?? -1,
 		],
 		indexes: [type],
 	};
