@@ -39,14 +39,13 @@ describe('custom tracing spans', () => {
 		expect(result).toBe('nested');
 	});
 
-	it('accepts all attribute value types, including undefined', () => {
+	it('accepts all attribute value types', () => {
 		tracing.enterSpan('test.attributes', (span) => {
 			expect(typeof span.isTraced).toBe('boolean');
 			expect(() => {
 				span.setAttribute('string', 'value');
 				span.setAttribute('number', 42);
 				span.setAttribute('boolean', true);
-				span.setAttribute('undefined', undefined);
 			}).not.toThrow();
 		});
 	});
@@ -74,6 +73,7 @@ function captureSpans(): RecordedSpan[] {
 			setAttribute(key, value) {
 				record.attributes[key] = value;
 				span.setAttribute(key, value);
+				return recordingSpan as typeof span;
 			},
 		};
 		return callback(recordingSpan as typeof span, ...callbackArgs);

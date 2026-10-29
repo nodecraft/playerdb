@@ -136,5 +136,5 @@ max_instances = 80
 
 [env.production.observability]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.01
 traces = {enabled = true}

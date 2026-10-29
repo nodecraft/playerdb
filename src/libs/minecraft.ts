@@ -166,7 +166,9 @@ const helpers = {
 					// expose early so the timeout handler can close a hung handshake
 					socket = tcpSocket;
 					const info = await tcpSocket.opened;
-					span.setAttribute('network.peer.address', info.remoteAddress);
+					if (info.remoteAddress) {
+						span.setAttribute('network.peer.address', info.remoteAddress);
+					}
 					return tcpSocket;
 				});
 
